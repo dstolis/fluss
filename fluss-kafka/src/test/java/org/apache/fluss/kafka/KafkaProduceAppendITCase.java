@@ -30,6 +30,7 @@ import org.apache.fluss.kafka.format.KafkaDataFormat;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.Schema;
+import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.row.InternalRow;
@@ -52,6 +53,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -441,6 +443,56 @@ class KafkaProduceAppendITCase {
                 }
             } finally {
                 executor.shutdownNow();
+                admin.dropTable(path, true).get();
+            }
+        }
+    }
+
+    /**
+     * Adding a nullable column to a raw-format table currently makes every later Produce fail with
+     * "Kafka value format raw requires exactly one Fluss field" (INVALID_TOPIC). This test asserts
+     * the expected behavior and fails on the current implementation.
+     */
+    @Test
+    void testAddColumnDoesNotBreakKafkaWrites() throws Exception {
+        TablePath path = TablePath.of(DATABASE, "produce_add_column");
+        TableDescriptor descriptor =
+                TableDescriptor.builder()
+                        .schema(Schema.newBuilder().column("body", DataTypes.BYTES()).build())
+                        .distributedBy(1)
+                        .logFormat(LogFormat.ARROW)
+                        .customProperty(KafkaDataFormat.VALUE_FORMAT_CONFIG, "raw")
+                        .build();
+        try (Connection connection = ConnectionFactory.createConnection(CLUSTER.getClientConfig());
+                org.apache.fluss.client.admin.Admin admin = connection.getAdmin()) {
+            admin.createDatabase(DATABASE, DatabaseDescriptor.EMPTY, true).get();
+            admin.createTable(path, descriptor, false).get();
+            CLUSTER.waitUntilAllGatewayHasSameMetadata();
+            try (KafkaProducer<byte[], byte[]> producer = producer("all")) {
+                assertThat(
+                                producer.send(new ProducerRecord<>(path.toString(), VALUE))
+                                        .get(30, TimeUnit.SECONDS)
+                                        .offset())
+                        .isZero();
+
+                admin.alterTable(
+                                path,
+                                Collections.singletonList(
+                                        TableChange.addColumn(
+                                                "added_later",
+                                                DataTypes.STRING(),
+                                                null,
+                                                TableChange.ColumnPosition.last())),
+                                false)
+                        .get();
+                CLUSTER.waitUntilAllGatewayHasSameMetadata();
+
+                assertThat(
+                                producer.send(new ProducerRecord<>(path.toString(), VALUE))
+                                        .get(30, TimeUnit.SECONDS)
+                                        .offset())
+                        .isEqualTo(1L);
+            } finally {
                 admin.dropTable(path, true).get();
             }
         }
