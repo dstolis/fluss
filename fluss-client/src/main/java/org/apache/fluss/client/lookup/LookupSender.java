@@ -28,9 +28,11 @@ import org.apache.fluss.exception.InvalidMetadataException;
 import org.apache.fluss.exception.LeaderNotAvailableException;
 import org.apache.fluss.exception.PartitionNotExistException;
 import org.apache.fluss.exception.RetriableException;
+import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePartition;
+import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.messages.LookupRequest;
 import org.apache.fluss.rpc.messages.LookupResponse;
@@ -39,6 +41,7 @@ import org.apache.fluss.rpc.messages.PbPrefixLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbValueList;
 import org.apache.fluss.rpc.messages.PrefixLookupRequest;
 import org.apache.fluss.rpc.messages.PrefixLookupResponse;
+import org.apache.fluss.rpc.messages.TableExistsRequest;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.utils.ExponentialBackoff;
 import org.apache.fluss.utils.types.Tuple2;
@@ -57,6 +60,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makeLookupRequest;
@@ -185,6 +189,15 @@ class LookupSender implements Runnable {
                 lookup.future().completeExceptionally(e);
                 continue;
             } catch (Exception e) {
+                if (isTableDropped(lookup.tablePath())) {
+                    // The leader will never be found for a dropped table, so complete the lookup
+                    // instead of re-enqueueing it forever.
+                    lookup.future()
+                            .completeExceptionally(
+                                    new TableNotExistException(
+                                            "Table '" + lookup.tablePath() + "' does not exist."));
+                    continue;
+                }
                 // if leader is not found, re-enqueue the lookup to send again.
                 LOG.warn("Failed to lookup the leader for {} when lookup", tb, e);
                 reEnqueueLookup(lookup);
@@ -498,6 +511,23 @@ class LookupSender implements Runnable {
                     error,
                     lookupBatch.lookups(),
                     "prefix lookup");
+        }
+    }
+
+    private boolean isTableDropped(TablePath tablePath) {
+        TableExistsRequest request = new TableExistsRequest();
+        request.setTablePath()
+                .setDatabaseName(tablePath.getDatabaseName())
+                .setTableName(tablePath.getTableName());
+        try {
+            return !metadataUpdater
+                    .newRandomTabletServerClient()
+                    .tableExists(request)
+                    .get(maxRequestTimeoutMs, TimeUnit.MILLISECONDS)
+                    .isExists();
+        } catch (Exception e) {
+            LOG.warn("Failed to check whether table {} exists when lookup", tablePath, e);
+            return false;
         }
     }
 

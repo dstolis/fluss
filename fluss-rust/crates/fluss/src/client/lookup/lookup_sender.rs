@@ -344,12 +344,20 @@ impl LookupDispatcher {
                 .iter()
                 .copied()
                 .collect();
+            let mut dropped_tables: HashSet<TablePath> = HashSet::new();
             if let Err(e) = self
                 .metadata
                 .update_tables_metadata(&table_paths_refs, &HashSet::new(), partition_ids)
                 .await
             {
                 warn!("Failed to update metadata for unknown leader tables: {}", e);
+                // The leader of a dropped table will never be found, so check which of the
+                // tables were dropped.
+                for table_path in &groups.unknown_leader_tables {
+                    if let Ok(None) = self.metadata.fetch_table_id(table_path).await {
+                        dropped_tables.insert(table_path.clone());
+                    }
+                }
             } else {
                 debug!(
                     "Updated metadata due to unknown leader tables during lookup: {:?}",
@@ -360,8 +368,18 @@ impl LookupDispatcher {
             // Re-group with fresh cluster state; dispatch what resolved, re-enqueue the rest.
             let retry = self.group_by_leader(unknowns);
             groups.merge_batches(retry.groups);
-            for item in retry.unknowns {
-                self.re_enqueue_lookup(item);
+            for mut item in retry.unknowns {
+                if dropped_tables.contains(item.table_path()) {
+                    let message = format!("Table {} does not exist.", item.table_path());
+                    item.complete_with_error(Error::FlussAPIError {
+                        api_error: ApiError {
+                            code: FlussError::TableNotExist.code(),
+                            message,
+                        },
+                    });
+                } else {
+                    self.re_enqueue_lookup(item);
+                }
             }
 
             // Nothing to dispatch even after refresh — back off to avoid a tight RPC loop.
