@@ -34,6 +34,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePartition;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.GetTableInfoRequest;
 import org.apache.fluss.rpc.messages.LookupRequest;
 import org.apache.fluss.rpc.messages.LookupResponse;
 import org.apache.fluss.rpc.messages.PbLookupRespForBucket;
@@ -41,8 +42,8 @@ import org.apache.fluss.rpc.messages.PbPrefixLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbValueList;
 import org.apache.fluss.rpc.messages.PrefixLookupRequest;
 import org.apache.fluss.rpc.messages.PrefixLookupResponse;
-import org.apache.fluss.rpc.messages.TableExistsRequest;
 import org.apache.fluss.rpc.protocol.ApiError;
+import org.apache.fluss.utils.ExceptionUtils;
 import org.apache.fluss.utils.ExponentialBackoff;
 import org.apache.fluss.utils.types.Tuple2;
 
@@ -58,6 +59,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -173,6 +175,8 @@ class LookupSender implements Runnable {
         // <leader, LookupType> -> lookup batches
         Map<Tuple2<Integer, LookupType>, List<AbstractLookupQuery<?>>> lookupBatchesByLeader =
                 new HashMap<>();
+        // table id -> why the table is gone, empty if it still exists
+        Map<Long, Optional<TableNotExistException>> goneTables = new HashMap<>();
         for (AbstractLookupQuery<?> lookup : lookups) {
             int leader;
             // lookup the leader node
@@ -189,13 +193,14 @@ class LookupSender implements Runnable {
                 lookup.future().completeExceptionally(e);
                 continue;
             } catch (Exception e) {
-                if (isTableDropped(lookup.tablePath())) {
-                    // The leader will never be found for a dropped table, so complete the lookup
-                    // instead of re-enqueueing it forever.
-                    lookup.future()
-                            .completeExceptionally(
-                                    new TableNotExistException(
-                                            "Table '" + lookup.tablePath() + "' does not exist."));
+                // The leader will never be found for a dropped or recreated table, so complete
+                // the lookup instead of re-enqueueing it forever.
+                Optional<TableNotExistException> tableGone =
+                        goneTables.computeIfAbsent(
+                                tb.getTableId(),
+                                tableId -> checkTableGone(lookup.tablePath(), tableId));
+                if (tableGone.isPresent()) {
+                    lookup.future().completeExceptionally(tableGone.get());
                     continue;
                 }
                 // if leader is not found, re-enqueue the lookup to send again.
@@ -514,21 +519,39 @@ class LookupSender implements Runnable {
         }
     }
 
-    private boolean isTableDropped(TablePath tablePath) {
-        TableExistsRequest request = new TableExistsRequest();
+    private Optional<TableNotExistException> checkTableGone(
+            TablePath tablePath, long expectedTableId) {
+        GetTableInfoRequest request = new GetTableInfoRequest();
         request.setTablePath()
                 .setDatabaseName(tablePath.getDatabaseName())
                 .setTableName(tablePath.getTableName());
+        long tableId;
         try {
-            return !metadataUpdater
-                    .newRandomTabletServerClient()
-                    .tableExists(request)
-                    .get(maxRequestTimeoutMs, TimeUnit.MILLISECONDS)
-                    .isExists();
+            tableId =
+                    metadataUpdater
+                            .newRandomTabletServerClient()
+                            .getTableInfo(request)
+                            .get(maxRequestTimeoutMs, TimeUnit.MILLISECONDS)
+                            .getTableId();
         } catch (Exception e) {
+            if (ExceptionUtils.findThrowable(e, TableNotExistException.class).isPresent()) {
+                return Optional.of(
+                        new TableNotExistException(
+                                String.format(
+                                        "Table '%s' (table id %d) does not exist.",
+                                        tablePath, expectedTableId)));
+            }
             LOG.warn("Failed to check whether table {} exists when lookup", tablePath, e);
-            return false;
+            return Optional.empty();
         }
+        if (tableId == expectedTableId) {
+            return Optional.empty();
+        }
+        return Optional.of(
+                new TableNotExistException(
+                        String.format(
+                                "Table '%s' (table id %d) has been dropped and re-created with table id %d.",
+                                tablePath, expectedTableId, tableId)));
     }
 
     private void reEnqueueLookup(AbstractLookupQuery<?> lookup) {

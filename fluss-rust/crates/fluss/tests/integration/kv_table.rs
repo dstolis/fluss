@@ -187,12 +187,21 @@ mod kv_table_test {
 
     #[tokio::test]
     async fn lookup_after_table_dropped() {
+        assert_lookup_fails_after_drop("test_lookup_after_table_dropped", false).await;
+    }
+
+    #[tokio::test]
+    async fn lookup_after_table_recreated() {
+        assert_lookup_fails_after_drop("test_lookup_after_table_recreated", true).await;
+    }
+
+    async fn assert_lookup_fails_after_drop(table_name: &str, recreate: bool) {
         let cluster = get_shared_cluster();
         let connection = cluster.get_fluss_connection().await;
 
         let admin = connection.get_admin().unwrap();
 
-        let table_path = TablePath::new("fluss", "test_lookup_after_table_dropped");
+        let table_path = TablePath::new("fluss", table_name);
 
         let table_descriptor = TableDescriptor::builder()
             .schema(
@@ -239,6 +248,9 @@ mod kv_table_test {
             .drop_table(&table_path, false)
             .await
             .expect("Failed to drop table");
+        if recreate {
+            create_table(&admin, &table_path, &table_descriptor).await;
+        }
 
         let error = tokio::time::timeout(Duration::from_secs(60), async {
             loop {

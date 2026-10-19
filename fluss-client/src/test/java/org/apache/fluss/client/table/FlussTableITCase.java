@@ -326,6 +326,29 @@ class FlussTableITCase extends ClientToServerITCaseBase {
     }
 
     @Test
+    void testLookupAfterTableRecreated() throws Exception {
+        TablePath tablePath = TablePath.of("test_db_1", "test_lookup_after_table_recreated");
+        createTable(tablePath, DATA1_TABLE_DESCRIPTOR_PK, false);
+
+        Table table = conn.getTable(tablePath);
+        verifyPutAndLookup(table, new Object[] {1, "a"});
+        Lookuper lookuper = table.newLookup().createLookuper();
+
+        admin.dropTable(tablePath, false).get();
+        admin.createTable(tablePath, DATA1_TABLE_DESCRIPTOR_PK, false).get();
+
+        // The tablet servers delete the replicas asynchronously, so a lookup can still succeed
+        // right after the drop.
+        retry(
+                Duration.ofMinutes(1),
+                () ->
+                        assertThat(lookuper.lookup(row(1)))
+                                .failsWithin(Duration.ofMinutes(1))
+                                .withThrowableOfType(ExecutionException.class)
+                                .withCauseInstanceOf(TableNotExistException.class));
+    }
+
+    @Test
     void testPutAndPrefixLookup() throws Exception {
         TablePath tablePath = TablePath.of("test_db_1", "test_put_and_prefix_lookup_table");
         Schema schema =
