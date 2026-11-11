@@ -163,6 +163,16 @@ public class FileLogInputStream
         }
 
         @Override
+        public int lastSequence() {
+            return loadBatchHeader().lastSequence();
+        }
+
+        @Override
+        public short writerEpoch() {
+            return loadBatchHeader().writerEpoch();
+        }
+
+        @Override
         public int leaderEpoch() {
             return loadBatchHeader().leaderEpoch();
         }

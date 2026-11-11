@@ -60,11 +60,13 @@ import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_OFFSET;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_OVERHEAD;
 import static org.apache.fluss.record.LogRecordBatchFormat.MAGIC_OFFSET;
 import static org.apache.fluss.record.LogRecordBatchFormat.V0_RECORD_BATCH_HEADER_SIZE;
 import static org.apache.fluss.record.LogRecordBatchFormat.V1_RECORD_BATCH_HEADER_SIZE;
 import static org.apache.fluss.record.LogRecordBatchFormat.V2_RECORD_BATCH_HEADER_SIZE;
+import static org.apache.fluss.record.LogRecordBatchFormat.V3_RECORD_BATCH_HEADER_SIZE;
 import static org.apache.fluss.record.LogRecordBatchFormat.attributeOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordsCountOffset;
@@ -97,7 +99,7 @@ public class FileLogProjection {
      * Buffer to read log records batch header. V1 is larger than V0, so use V1 head buffer can read
      * V0 header even if there is no enough bytes in log file.
      */
-    private final ByteBuffer logHeaderBuffer = ByteBuffer.allocate(V2_RECORD_BATCH_HEADER_SIZE);
+    private final ByteBuffer logHeaderBuffer = ByteBuffer.allocate(V3_RECORD_BATCH_HEADER_SIZE);
 
     private final ByteBuffer arrowHeaderBuffer = ByteBuffer.allocate(ARROW_HEADER_SIZE);
     private ByteBuffer arrowMetadataBuffer;
@@ -462,7 +464,7 @@ public class FileLogProjection {
 
     /**
      * Read log header fully or fail with EOFException if there is no enough bytes to read a full
-     * log header. This handles different log header size for magic v0, v1 and v2.
+     * log header. This handles different log header size for magic v0, v1, v2 and v3.
      */
     static void readLogHeaderFullyOrFail(FileChannel channel, ByteBuffer buffer, int position)
             throws IOException {
@@ -492,6 +494,12 @@ public class FileLogProjection {
                                 "Failed to read v2 log header from file channel `%s`. Expected to read %d bytes, "
                                         + "but reached end of file after reading %d bytes. Started read from position %d.",
                                 channel, V2_RECORD_BATCH_HEADER_SIZE, size, position));
+            } else if (magic == LOG_MAGIC_VALUE_V3 && size < V3_RECORD_BATCH_HEADER_SIZE) {
+                throw new EOFException(
+                        String.format(
+                                "Failed to read v3 log header from file channel `%s`. Expected to read %d bytes, "
+                                        + "but reached end of file after reading %d bytes. Started read from position %d.",
+                                channel, V3_RECORD_BATCH_HEADER_SIZE, size, position));
             }
         }
     }

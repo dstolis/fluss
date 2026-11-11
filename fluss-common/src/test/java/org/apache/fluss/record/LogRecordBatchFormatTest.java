@@ -34,6 +34,7 @@ import static org.apache.fluss.record.LogRecordBatchFormat.schemaIdOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.statisticsDataOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.statisticsLengthOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.writeClientIdOffset;
+import static org.apache.fluss.record.LogRecordBatchFormat.writerEpochOffset;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -103,5 +104,32 @@ public class LogRecordBatchFormatTest {
         assertThat(statisticsLengthOffset(magic)).isEqualTo(52);
         assertThat(statisticsDataOffset(magic)).isEqualTo(56);
         assertThat(recordBatchHeaderSize(magic)).isEqualTo(56);
+    }
+
+    @Test
+    void testLogRecordBatchFormatForMagicV3() {
+        byte magic = (byte) 3;
+        assertThat(leaderEpochOffset(magic)).isEqualTo(21);
+        assertThat(crcOffset(magic)).isEqualTo(25);
+        assertThat(schemaIdOffset(magic)).isEqualTo(29);
+        assertThat(attributeOffset(magic)).isEqualTo(31);
+        assertThat(lastOffsetDeltaOffset(magic)).isEqualTo(32);
+        assertThat(writeClientIdOffset(magic)).isEqualTo(36);
+        assertThat(writerEpochOffset(magic)).isEqualTo(44);
+        assertThat(batchSequenceOffset(magic)).isEqualTo(46);
+        assertThat(recordsCountOffset(magic)).isEqualTo(50);
+        assertThat(statisticsLengthOffset(magic)).isEqualTo(54);
+        assertThat(statisticsDataOffset(magic)).isEqualTo(58);
+        assertThat(recordBatchHeaderSize(magic)).isEqualTo(58);
+    }
+
+    @Test
+    void testWriterEpochNotSupportedBeforeMagicV3() {
+        for (byte magic = 0; magic < 3; magic++) {
+            byte m = magic;
+            assertThatThrownBy(() -> writerEpochOffset(m))
+                    .isInstanceOf(UnsupportedOperationException.class)
+                    .hasMessageContaining("Writer epoch is not supported");
+        }
     }
 }

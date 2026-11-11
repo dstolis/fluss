@@ -46,9 +46,13 @@ import static org.apache.fluss.record.LogRecordBatchFormat.COMMIT_TIMESTAMP_OFFS
 import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_OFFSET;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_OVERHEAD;
 import static org.apache.fluss.record.LogRecordBatchFormat.MAGIC_OFFSET;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_LEADER_EPOCH;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
+import static org.apache.fluss.record.LogRecordBatchFormat.PER_RECORD_SEQUENCE_FLAG_MASK;
 import static org.apache.fluss.record.LogRecordBatchFormat.attributeOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.batchSequenceOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.crcOffset;
@@ -60,6 +64,7 @@ import static org.apache.fluss.record.LogRecordBatchFormat.schemaIdOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.statisticsDataOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.statisticsLengthOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.writeClientIdOffset;
+import static org.apache.fluss.record.LogRecordBatchFormat.writerEpochOffset;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
@@ -76,6 +81,7 @@ import static org.apache.fluss.utils.Preconditions.checkArgument;
  *   <li>V0 => {@link LogRecordBatchFormat#LOG_MAGIC_VALUE_V0}
  *   <li>V1 => {@link LogRecordBatchFormat#LOG_MAGIC_VALUE_V1}
  *   <li>V2 => {@link LogRecordBatchFormat#LOG_MAGIC_VALUE_V2}
+ *   <li>V3 => {@link LogRecordBatchFormat#LOG_MAGIC_VALUE_V3}
  * </ul>
  *
  * @since 0.1
@@ -140,6 +146,29 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     }
 
     @Override
+    public int lastSequence() {
+        int baseSequence = batchSequence();
+        if (baseSequence == NO_BATCH_SEQUENCE || !isPerRecordSequence()) {
+            return baseSequence;
+        }
+        return incrementSequence(baseSequence, lastOffsetDelta());
+    }
+
+    @Override
+    public short writerEpoch() {
+        if (magic >= LOG_MAGIC_VALUE_V3) {
+            return segment.getShort(position + writerEpochOffset(magic));
+        } else {
+            return NO_WRITER_EPOCH;
+        }
+    }
+
+    /** Whether the sequence of this batch advances once per record instead of once per batch. */
+    public boolean isPerRecordSequence() {
+        return magic >= LOG_MAGIC_VALUE_V3 && (attributes() & PER_RECORD_SEQUENCE_FLAG_MASK) != 0;
+    }
+
+    @Override
     public int leaderEpoch() {
         if (magic >= LOG_MAGIC_VALUE_V2) {
             return segment.getInt(position + leaderEpochOffset(magic));
@@ -182,7 +211,6 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     }
 
     private byte attributes() {
-        // note we're not using the byte of attributes now.
         return segment.get(attributeOffset(magic) + position);
     }
 
@@ -600,5 +628,16 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     @VisibleForTesting
     int position() {
         return position;
+    }
+
+    /**
+     * Increments the sequence number by the given value, wrapping around to 0 after {@link
+     * Integer#MAX_VALUE}, in the same way as Kafka producers number their records.
+     */
+    public static int incrementSequence(int sequence, int increment) {
+        if (sequence > Integer.MAX_VALUE - increment) {
+            return increment - (Integer.MAX_VALUE - sequence) - 1;
+        }
+        return sequence + increment;
     }
 }

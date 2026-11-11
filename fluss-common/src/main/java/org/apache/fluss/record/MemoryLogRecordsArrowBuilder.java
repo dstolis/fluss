@@ -39,14 +39,18 @@ import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_LENGTH;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_LEADER_EPOCH;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
+import static org.apache.fluss.record.LogRecordBatchFormat.PER_RECORD_SEQUENCE_FLAG_MASK;
 import static org.apache.fluss.record.LogRecordBatchFormat.crcOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static org.apache.fluss.record.LogRecordBatchFormat.schemaIdOffset;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
+import static org.apache.fluss.utils.Preconditions.checkState;
 
 /** Builder for {@link MemoryLogRecords} of log records in {@link LogFormat#ARROW} format. */
 public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
@@ -67,7 +71,10 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
     private volatile MultiBytesView bytesView = null;
 
     private long writerId;
+    // Epoch of the writer that produced this batch, not to be confused with the arrow writer epoch.
+    private short batchWriterEpoch;
     private int batchSequence;
+    private boolean perRecordSequence;
     private int estimatedSizeInBytes;
     private int recordCount;
     private volatile boolean isClosed;
@@ -96,6 +103,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         this.writerEpoch = arrowWriter.getEpoch();
 
         this.writerId = NO_WRITER_ID;
+        this.batchWriterEpoch = NO_WRITER_EPOCH;
         this.batchSequence = NO_BATCH_SEQUENCE;
         this.isClosed = false;
 
@@ -296,6 +304,22 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         this.batchSequence = batchBaseSequence;
     }
 
+    /**
+     * Sets the writer epoch and whether the sequence advances once per record. Both require magic
+     * V3 or later.
+     */
+    public void setWriterEpochAndSequenceMode(short writerEpoch, boolean perRecordSequence) {
+        checkState(
+                magic >= LOG_MAGIC_VALUE_V3
+                        || (writerEpoch == NO_WRITER_EPOCH && !perRecordSequence),
+                "Writer epoch and per-record sequence require magic v3, but magic is v%s.",
+                magic);
+        // trigger to rewrite batch header when next build.
+        this.resetBatchHeader = true;
+        this.batchWriterEpoch = writerEpoch;
+        this.perRecordSequence = perRecordSequence;
+    }
+
     public void abort() {
         arrowWriter.recycle(writerEpoch);
         aborted = true;
@@ -377,6 +401,9 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         if (appendOnly) {
             attributes |= 0x01; // set appendOnly flag
         }
+        if (perRecordSequence) {
+            attributes |= PER_RECORD_SEQUENCE_FLAG_MASK;
+        }
 
         outputView.writeByte(attributes);
 
@@ -389,6 +416,9 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             outputView.writeInt(0);
         }
         outputView.writeLong(writerId);
+        if (magic >= LOG_MAGIC_VALUE_V3) {
+            outputView.writeShort(batchWriterEpoch);
+        }
         outputView.writeInt(batchSequence);
         outputView.writeInt(recordCount);
 

@@ -61,6 +61,7 @@ import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchStatisticsTestUtils.createAllColumnsStatsMapping;
 import static org.apache.fluss.record.TestData.DATA1;
 import static org.apache.fluss.record.TestData.DATA1_ROW_TYPE;
@@ -115,7 +116,13 @@ public class MemoryLogRecordsArrowBuilderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2})
+    @ValueSource(
+            bytes = {
+                LOG_MAGIC_VALUE_V0,
+                LOG_MAGIC_VALUE_V1,
+                LOG_MAGIC_VALUE_V2,
+                LOG_MAGIC_VALUE_V3
+            })
     void testAppend(byte recordBatchMagic) throws Exception {
         int maxSizeInBytes = 1024;
         ArrowWriter writer =
@@ -356,6 +363,52 @@ public class MemoryLogRecordsArrowBuilderTest {
         recordBatch = records.batches().iterator().next();
         assertThat(recordBatch.writerId()).isEqualTo(1L);
         assertThat(recordBatch.batchSequence()).isEqualTo(1);
+    }
+
+    @Test
+    void testWriterEpochAndPerRecordSequence() throws Exception {
+        ArrowWriter writer =
+                provider.getOrCreateWriter(
+                        1L, DEFAULT_SCHEMA_ID, 1024, DATA1_ROW_TYPE, DEFAULT_COMPRESSION);
+        MemoryLogRecordsArrowBuilder builder =
+                createMemoryLogRecordsArrowBuilder(0, writer, 10, 1024, LOG_MAGIC_VALUE_V3);
+        for (Object[] data : DATA1.subList(0, 3)) {
+            builder.append(ChangeType.APPEND_ONLY, DataTestUtils.row(data));
+        }
+        builder.setWriterState(7L, 10);
+        builder.setWriterEpochAndSequenceMode((short) 2, true);
+        builder.close();
+
+        LogRecordBatch batch =
+                MemoryLogRecords.pointToBytesView(builder.build()).batches().iterator().next();
+        batch.ensureValid();
+        assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V3);
+        assertThat(batch.writerId()).isEqualTo(7L);
+        assertThat(batch.writerEpoch()).isEqualTo((short) 2);
+        assertThat(batch.batchSequence()).isEqualTo(10);
+        assertThat(batch.lastSequence()).isEqualTo(12);
+
+        // a re-enqueued batch rewrites its header with the new writer state
+        builder.setWriterState(7L, 0);
+        builder.setWriterEpochAndSequenceMode((short) 3, false);
+        batch = MemoryLogRecords.pointToBytesView(builder.build()).batches().iterator().next();
+        batch.ensureValid();
+        assertThat(batch.writerEpoch()).isEqualTo((short) 3);
+        assertThat(batch.batchSequence()).isEqualTo(0);
+        assertThat(batch.lastSequence()).isEqualTo(0);
+    }
+
+    @Test
+    void testWriterEpochRequiresMagicV3() throws Exception {
+        ArrowWriter writer =
+                provider.getOrCreateWriter(
+                        1L, DEFAULT_SCHEMA_ID, 1024, DATA1_ROW_TYPE, DEFAULT_COMPRESSION);
+        MemoryLogRecordsArrowBuilder builder =
+                createMemoryLogRecordsArrowBuilder(0, writer, 10, 1024, LOG_MAGIC_VALUE_V2);
+        assertThatThrownBy(() -> builder.setWriterEpochAndSequenceMode((short) 1, false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("require magic v3");
+        builder.close();
     }
 
     @Test
@@ -667,6 +720,7 @@ public class MemoryLogRecordsArrowBuilderTest {
         params.add(Arguments.arguments(LOG_MAGIC_VALUE_V0, 48));
         params.add(Arguments.arguments(LOG_MAGIC_VALUE_V1, 52));
         params.add(Arguments.arguments(LOG_MAGIC_VALUE_V2, 56));
+        params.add(Arguments.arguments(LOG_MAGIC_VALUE_V3, 58));
         return params;
     }
 

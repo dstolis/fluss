@@ -27,6 +27,7 @@ import org.apache.fluss.testutils.DataTestUtils;
 import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.CloseableIterator;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -36,14 +37,17 @@ import java.util.List;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link DefaultLogRecordBatch}. */
 public class DefaultLogRecordBatchTest extends LogTestBase {
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V3})
     void testRecordBatchSize(byte magic) throws Exception {
         MemoryLogRecords memoryLogRecords =
                 DataTestUtils.genMemoryLogRecordsByObject(magic, TestData.DATA1);
@@ -55,7 +59,7 @@ public class DefaultLogRecordBatchTest extends LogTestBase {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V3})
     void testIndexedRowWriteAndReadBatch(byte magic) throws Exception {
         int recordNumber = 50;
         RowType allRowType = TestInternalRowGenerator.createAllRowType();
@@ -110,7 +114,7 @@ public class DefaultLogRecordBatchTest extends LogTestBase {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V3})
     void testNoRecordAppend(byte magic) throws Exception {
         // 1. no record append with baseOffset as 0.
         MemoryLogRecordsIndexedBuilder builder =
@@ -170,5 +174,66 @@ public class DefaultLogRecordBatchTest extends LogTestBase {
                 CloseableIterator<LogRecord> iter = logRecordBatch.records(readContext)) {
             assertThat(iter.hasNext()).isFalse();
         }
+    }
+
+    @Test
+    void testPerRecordSequence() throws Exception {
+        LogRecordBatch batch = buildIndexedBatch(LOG_MAGIC_VALUE_V3, 3, (short) 4, true);
+        assertThat(batch.writerEpoch()).isEqualTo((short) 4);
+        assertThat(batch.batchSequence()).isEqualTo(10);
+        // records [10, 11, 12]
+        assertThat(batch.lastSequence()).isEqualTo(12);
+    }
+
+    @Test
+    void testPerBatchSequence() throws Exception {
+        LogRecordBatch batch = buildIndexedBatch(LOG_MAGIC_VALUE_V3, 3, (short) 4, false);
+        assertThat(batch.writerEpoch()).isEqualTo((short) 4);
+        assertThat(batch.batchSequence()).isEqualTo(10);
+        assertThat(batch.lastSequence()).isEqualTo(10);
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
+    void testPreV3BatchHasNoWriterEpoch(byte magic) throws Exception {
+        LogRecordBatch batch = buildIndexedBatch(magic, 3, NO_WRITER_EPOCH, false);
+        assertThat(batch.writerEpoch()).isEqualTo(NO_WRITER_EPOCH);
+        assertThat(batch.lastSequence()).isEqualTo(batch.batchSequence());
+
+        MemoryLogRecordsIndexedBuilder builder =
+                MemoryLogRecordsIndexedBuilder.builder(
+                        0L, schemaId, Integer.MAX_VALUE, magic, new UnmanagedPagedOutputView(100));
+        assertThatThrownBy(() -> builder.setWriterEpochAndSequenceMode((short) 0, true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("require magic v3");
+    }
+
+    @Test
+    void testIncrementSequenceWrapsAround() {
+        assertThat(DefaultLogRecordBatch.incrementSequence(5, 3)).isEqualTo(8);
+        assertThat(DefaultLogRecordBatch.incrementSequence(Integer.MAX_VALUE, 0))
+                .isEqualTo(Integer.MAX_VALUE);
+        assertThat(DefaultLogRecordBatch.incrementSequence(Integer.MAX_VALUE, 1)).isEqualTo(0);
+        assertThat(DefaultLogRecordBatch.incrementSequence(Integer.MAX_VALUE - 1, 3)).isEqualTo(1);
+    }
+
+    private LogRecordBatch buildIndexedBatch(
+            byte magic, int recordNumber, short writerEpoch, boolean perRecordSequence)
+            throws Exception {
+        MemoryLogRecordsIndexedBuilder builder =
+                MemoryLogRecordsIndexedBuilder.builder(
+                        0L, schemaId, Integer.MAX_VALUE, magic, new UnmanagedPagedOutputView(100));
+        for (int i = 0; i < recordNumber; i++) {
+            builder.append(ChangeType.INSERT, TestInternalRowGenerator.genIndexedRowForAllType());
+        }
+        builder.setWriterState(7L, 10);
+        builder.setWriterEpochAndSequenceMode(writerEpoch, perRecordSequence);
+        LogRecordBatch batch =
+                MemoryLogRecords.pointToBytesView(builder.build()).batches().iterator().next();
+        batch.ensureValid();
+        assertThat(batch.magic()).isEqualTo(magic);
+        assertThat(batch.writerId()).isEqualTo(7L);
+        builder.close();
+        return batch;
     }
 }
