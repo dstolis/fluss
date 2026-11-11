@@ -19,6 +19,7 @@ package org.apache.fluss.record;
 
 import org.apache.fluss.compression.ArrowCompressionInfo;
 import org.apache.fluss.compression.ArrowCompressionType;
+import org.apache.fluss.memory.UnmanagedPagedOutputView;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.flatbuf.RecordBatch;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.ipc.ReadChannel;
@@ -51,6 +52,8 @@ import java.util.stream.Stream;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordsCountOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.statisticsLengthOffset;
@@ -62,6 +65,7 @@ import static org.apache.fluss.record.TestData.DEFAULT_SCHEMA_ID;
 import static org.apache.fluss.record.TestData.TEST_SCHEMA_GETTER;
 import static org.apache.fluss.testutils.DataTestUtils.createBasicMemoryLogRecords;
 import static org.apache.fluss.testutils.DataTestUtils.createRecordsWithoutBaseLogOffset;
+import static org.apache.fluss.testutils.DataTestUtils.indexedRow;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -239,7 +243,13 @@ public class FileLogInputStreamTest extends LogTestBase {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2})
+    @ValueSource(
+            bytes = {
+                LOG_MAGIC_VALUE_V0,
+                LOG_MAGIC_VALUE_V1,
+                LOG_MAGIC_VALUE_V2,
+                LOG_MAGIC_VALUE_V3
+            })
     void testProjectedFileRecordsRejectOversizedChangeTypeVector(byte magic) throws Exception {
         MemoryLogRecords memory = createProjectedTestBatch(magic, false);
         int recordCount = memory.sizeInBytes() - recordBatchHeaderSize(magic) + 1;
@@ -312,7 +322,13 @@ public class FileLogInputStreamTest extends LogTestBase {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
+    @ValueSource(
+            bytes = {
+                LOG_MAGIC_VALUE_V0,
+                LOG_MAGIC_VALUE_V1,
+                LOG_MAGIC_VALUE_V2,
+                LOG_MAGIC_VALUE_V3
+            })
     void testWriteTo(byte recordBatchMagic) throws Exception {
         try (FileLogRecords fileLogRecords = FileLogRecords.open(new File(tempDir, "test.tmp"))) {
             fileLogRecords.append(
@@ -345,6 +361,57 @@ public class FileLogInputStreamTest extends LogTestBase {
                 assertThat(record.getRow().getFieldCount()).isEqualTo(2);
                 assertThat(iterator.hasNext()).isFalse();
             }
+        }
+    }
+
+    @Test
+    void testReadV2AndV3BatchesFromSameFile() throws Exception {
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "mixed_v2_v3.tmp"))) {
+            fileLogRecords.append(
+                    createRecordsWithoutBaseLogOffset(
+                            DATA1_ROW_TYPE,
+                            DEFAULT_SCHEMA_ID,
+                            0L,
+                            -1L,
+                            LOG_MAGIC_VALUE_V2,
+                            Collections.singletonList(new Object[] {0, "a"}),
+                            LogFormat.ARROW));
+            MemoryLogRecordsIndexedBuilder builder =
+                    MemoryLogRecordsIndexedBuilder.builder(
+                            1L,
+                            DEFAULT_SCHEMA_ID,
+                            Integer.MAX_VALUE,
+                            LOG_MAGIC_VALUE_V3,
+                            new UnmanagedPagedOutputView(100));
+            for (int i = 1; i <= 3; i++) {
+                builder.append(
+                        ChangeType.APPEND_ONLY, indexedRow(DATA1_ROW_TYPE, new Object[] {i, "b"}));
+            }
+            builder.setWriterState(7L, 10);
+            builder.setWriterEpochAndSequenceMode((short) 2, true);
+            fileLogRecords.append(MemoryLogRecords.pointToBytesView(builder.build()));
+            builder.close();
+            fileLogRecords.flush();
+
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
+
+            FileLogInputStream.FileChannelLogRecordBatch v2Batch = logInputStream.nextBatch();
+            assertThat(v2Batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
+            assertThat(v2Batch.writerEpoch()).isEqualTo(NO_WRITER_EPOCH);
+            assertThat(v2Batch.lastSequence()).isEqualTo(v2Batch.batchSequence());
+
+            FileLogInputStream.FileChannelLogRecordBatch v3Batch = logInputStream.nextBatch();
+            assertThat(v3Batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V3);
+            assertThat(v3Batch.baseLogOffset()).isEqualTo(1L);
+            assertThat(v3Batch.lastLogOffset()).isEqualTo(3L);
+            assertThat(v3Batch.writerId()).isEqualTo(7L);
+            assertThat(v3Batch.writerEpoch()).isEqualTo((short) 2);
+            assertThat(v3Batch.batchSequence()).isEqualTo(10);
+            assertThat(v3Batch.lastSequence()).isEqualTo(12);
+            v3Batch.ensureValid();
+            assertThat(logInputStream.nextBatch()).isNull();
         }
     }
 
@@ -625,7 +692,10 @@ public class FileLogInputStreamTest extends LogTestBase {
 
     private static Stream<Arguments> projectedFileModes() {
         List<Arguments> modes = new ArrayList<>();
-        for (byte magic : new byte[] {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2}) {
+        for (byte magic :
+                new byte[] {
+                    LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2, LOG_MAGIC_VALUE_V3
+                }) {
             for (ArrowCompressionType compression : ArrowCompressionType.values()) {
                 for (boolean appendOnly : new boolean[] {false, true}) {
                     for (boolean checkCrc : new boolean[] {false, true}) {

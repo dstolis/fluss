@@ -47,6 +47,7 @@ import static org.apache.fluss.compression.ArrowCompressionInfo.DEFAULT_COMPRESS
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.MAGIC_OFFSET;
 import static org.apache.fluss.record.LogRecordBatchFormat.V0_RECORD_BATCH_HEADER_SIZE;
 import static org.apache.fluss.record.LogRecordBatchFormat.V1_RECORD_BATCH_HEADER_SIZE;
@@ -562,7 +563,13 @@ class FileLogProjectionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2})
+    @ValueSource(
+            bytes = {
+                LOG_MAGIC_VALUE_V0,
+                LOG_MAGIC_VALUE_V1,
+                LOG_MAGIC_VALUE_V2,
+                LOG_MAGIC_VALUE_V3
+            })
     void testProjectRecordBatch(byte recordBatchMagic) throws Exception {
         // Use schemaId=2 which corresponds to DATA2_SCHEMA (3 columns) in testingSchemaGetter
         int schemaIdForData2 = 2;
@@ -627,7 +634,13 @@ class FileLogProjectionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2})
+    @ValueSource(
+            bytes = {
+                LOG_MAGIC_VALUE_V0,
+                LOG_MAGIC_VALUE_V1,
+                LOG_MAGIC_VALUE_V2,
+                LOG_MAGIC_VALUE_V3
+            })
     void testProjectRecordBatchEmptyBatch(byte recordBatchMagic) throws Exception {
         // Create an empty batch (this would be a CDC batch with no records)
         FileLogRecords fileLogRecords = FileLogRecords.open(new File(tempDir, "empty.tmp"));
@@ -662,7 +675,13 @@ class FileLogProjectionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2})
+    @ValueSource(
+            bytes = {
+                LOG_MAGIC_VALUE_V0,
+                LOG_MAGIC_VALUE_V1,
+                LOG_MAGIC_VALUE_V2,
+                LOG_MAGIC_VALUE_V3
+            })
     void testProjectRecordBatchSingleColumn(byte recordBatchMagic) throws Exception {
         // Use schemaId=2 which corresponds to DATA2_SCHEMA (3 columns) in testingSchemaGetter
         int schemaIdForData2 = 2;
@@ -715,7 +734,13 @@ class FileLogProjectionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2})
+    @ValueSource(
+            bytes = {
+                LOG_MAGIC_VALUE_V0,
+                LOG_MAGIC_VALUE_V1,
+                LOG_MAGIC_VALUE_V2,
+                LOG_MAGIC_VALUE_V3
+            })
     void testProjectRecordBatchAllColumns(byte recordBatchMagic) throws Exception {
         // Use schemaId=2 which corresponds to DATA2_SCHEMA (3 columns) in testingSchemaGetter
         int schemaIdForData2 = 2;
@@ -790,7 +815,13 @@ class FileLogProjectionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1, LOG_MAGIC_VALUE_V2})
+    @ValueSource(
+            bytes = {
+                LOG_MAGIC_VALUE_V0,
+                LOG_MAGIC_VALUE_V1,
+                LOG_MAGIC_VALUE_V2,
+                LOG_MAGIC_VALUE_V3
+            })
     void testProjectRecordBatchMultipleBatches(byte recordBatchMagic) throws Exception {
         // Test projection across multiple batches
         FileLogRecords fileLogRecords =
@@ -861,7 +892,7 @@ class FileLogProjectionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2})
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2, LOG_MAGIC_VALUE_V3})
     void testProjectRecordBatchStatisticsClearing(byte recordBatchMagic) throws Exception {
         // Test that statistics are properly cleared during projection for V2+ versions
         FileLogRecords fileLogRecords =
@@ -965,7 +996,7 @@ class FileLogProjectionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2})
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2, LOG_MAGIC_VALUE_V3})
     void testProjectStatisticsClearing(byte recordBatchMagic) throws Exception {
         // Use schemaId=2 which corresponds to DATA2_SCHEMA (3 columns) in testingSchemaGetter
         int schemaIdForData2 = 2;

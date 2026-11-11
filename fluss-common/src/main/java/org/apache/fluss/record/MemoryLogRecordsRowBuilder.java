@@ -28,15 +28,20 @@ import java.io.IOException;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.BASE_OFFSET_LENGTH;
 import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_LENGTH;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_LEADER_EPOCH;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
+import static org.apache.fluss.record.LogRecordBatchFormat.PER_RECORD_SEQUENCE_FLAG_MASK;
 import static org.apache.fluss.record.LogRecordBatchFormat.crcOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.lastOffsetDeltaOffset;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static org.apache.fluss.record.LogRecordBatchFormat.schemaIdOffset;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
+import static org.apache.fluss.utils.Preconditions.checkState;
 
 /** Abstract base builder for row-based MemoryLogRecords builders sharing common logic. */
 public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
@@ -53,7 +58,9 @@ public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
 
     private BytesView builtBuffer = null;
     private long writerId;
+    private short writerEpoch;
     private int batchSequence;
+    private boolean perRecordSequence;
     private int currentRecordNumber;
     private int sizeInBytes;
     private volatile boolean isClosed;
@@ -77,6 +84,7 @@ public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
         this.pagedOutputView = pagedOutputView;
         this.firstSegment = pagedOutputView.getCurrentSegment();
         this.writerId = NO_WRITER_ID;
+        this.writerEpoch = NO_WRITER_EPOCH;
         this.batchSequence = NO_BATCH_SEQUENCE;
         this.currentRecordNumber = 0;
         this.isClosed = false;
@@ -150,6 +158,22 @@ public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
         this.batchSequence = batchSequence;
     }
 
+    /**
+     * Sets the writer epoch and whether the sequence advances once per record. Both require magic
+     * V3 or later.
+     */
+    public void setWriterEpochAndSequenceMode(short writerEpoch, boolean perRecordSequence) {
+        checkState(
+                magic >= LOG_MAGIC_VALUE_V3
+                        || (writerEpoch == NO_WRITER_EPOCH && !perRecordSequence),
+                "Writer epoch and per-record sequence require magic v3, but magic is v%s.",
+                magic);
+        // trigger to rewrite batch header
+        this.builtBuffer = null;
+        this.writerEpoch = writerEpoch;
+        this.perRecordSequence = perRecordSequence;
+    }
+
     public long writerId() {
         return writerId;
     }
@@ -204,9 +228,14 @@ public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
         outputView.writeUnsignedInt(0);
 
         outputView.writeShort((short) schemaId);
-        // write attributes (currently only appendOnly flag)
-        outputView.writeBoolean(appendOnly);
-        // skip write attribute byte for now.
+        byte attributes = 0;
+        if (appendOnly) {
+            attributes |= 0x01; // set appendOnly flag
+        }
+        if (perRecordSequence) {
+            attributes |= PER_RECORD_SEQUENCE_FLAG_MASK;
+        }
+        outputView.writeByte(attributes);
         outputView.setPosition(lastOffsetDeltaOffset(magic));
         if (currentRecordNumber > 0) {
             outputView.writeInt(currentRecordNumber - 1);
@@ -216,8 +245,15 @@ public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
             outputView.writeInt(0);
         }
         outputView.writeLong(writerId);
+        if (magic >= LOG_MAGIC_VALUE_V3) {
+            outputView.writeShort(writerEpoch);
+        }
         outputView.writeInt(batchSequence);
         outputView.writeInt(currentRecordNumber);
+        if (magic >= LOG_MAGIC_VALUE_V1) {
+            // row-based batches carry no statistics
+            outputView.writeInt(0);
+        }
 
         // Update crc.
         long crc = Crc32C.compute(pagedOutputView.getWrittenSegments(), schemaIdOffset(magic));

@@ -39,6 +39,17 @@ public class LogRecordBatchFormat {
      */
     public static final int NO_LEADER_EPOCH = -1;
 
+    /**
+     * The writer epoch of batches whose magic is lower than V3, and the first epoch of a writer.
+     */
+    public static final short NO_WRITER_EPOCH = 0;
+
+    /**
+     * Attribute flag set when the sequence advances once per record instead of once per batch. Only
+     * honoured for magic V3 and later, see {@link #LOG_MAGIC_VALUE_V3}.
+     */
+    public static final byte PER_RECORD_SEQUENCE_FLAG_MASK = 0x02;
+
     public static final int BASE_OFFSET_LENGTH = 8;
     public static final int LENGTH_LENGTH = 4;
     public static final int MAGIC_LENGTH = 1;
@@ -49,8 +60,10 @@ public class LogRecordBatchFormat {
     private static final int ATTRIBUTE_LENGTH = 1;
     private static final int LAST_OFFSET_DELTA_LENGTH = 4;
     private static final int WRITE_CLIENT_ID_LENGTH = 8;
+    private static final int WRITER_EPOCH_LENGTH = 2;
     private static final int BATCH_SEQUENCE_LENGTH = 4;
     private static final int RECORDS_COUNT_LENGTH = 4;
+    private static final int STATISTICS_LENGTH_LENGTH = 4;
 
     public static final int BASE_OFFSET_OFFSET = 0;
     public static final int LENGTH_OFFSET = BASE_OFFSET_OFFSET + BASE_OFFSET_LENGTH;
@@ -61,6 +74,91 @@ public class LogRecordBatchFormat {
 
     // Statistics format version
     public static final byte STATISTICS_VERSION = 1;
+
+    // ----------------------------------------------------------------------------------------
+    // Format of Magic Version: V3
+    // ----------------------------------------------------------------------------------------
+
+    /**
+     * LogRecordBatch implementation for magic 3 (V3). The schema of {@link LogRecordBatch} is given
+     * below:
+     *
+     * <pre>
+     * +----------------+------------------+------------------+
+     * | BaseOffset     | Length           | Magic            |
+     * | (8 bytes)      | (4 bytes)        | (1 byte)         |
+     * +----------------+------------------+------------------+
+     * | CommitTimestamp                   | LeaderEpoch      |
+     * | (8 bytes)                        | (4 bytes)        |
+     * +----------------------------------+------------------+
+     * | CRC            | SchemaId         | Attributes       |
+     * | (4 bytes)      | (2 bytes)        | (1 byte)         |
+     * +----------------+------------------+------------------+
+     * | LastOffsetDelta                   | WriterID         |
+     * | (4 bytes)                        | (8 bytes)        |
+     * +----------------------------------+------------------+
+     * | WriterEpoch    | BaseSequence     | RecordCount      |
+     * | (2 bytes)      | (4 bytes)        | (4 bytes)        |
+     * +----------------+------------------+------------------+
+     * | StatisticsLength                                     |
+     * | (4 bytes)                                            |
+     * +------------------------------------------------------+
+     * | Statistics Data (optional)                           |
+     * | (variable length, only if StatisticsLength &gt; 0)  |
+     * +------------------------------------------------------+
+     * | Records Data (variable length)                       |
+     * +------------------------------------------------------+
+     * </pre>
+     *
+     * <p>V3 extends V2 by adding the WriterEpoch field, which lets a writer restart its sequence
+     * from 0 and lets the server fence batches of an older epoch. The BatchSequence field of V2 is
+     * read as the first sequence of the batch (BaseSequence).
+     *
+     * <p>The last sequence of a batch depends on the PerRecordSequence flag:
+     *
+     * <ul>
+     *   <li>Clear: the sequence advances once per batch, so the last sequence equals the base
+     *       sequence however many records the batch holds. A KV batch, for example, can produce
+     *       both an UPDATE_BEFORE and an UPDATE_AFTER record for one upsert. Batches of magic lower
+     *       than V3 are always read this way.
+     *   <li>Set: the sequence advances once per record, so the last sequence is the base sequence
+     *       plus LastOffsetDelta, wrapping around at {@link Integer#MAX_VALUE}. Kafka producers
+     *       number their records this way.
+     * </ul>
+     *
+     * <p>The current attributes are given below:
+     *
+     * <pre>
+     * -----------------------------------------------------------------------
+     * |  Unused (2-7)   |  PerRecordSequence Flag (1) |  AppendOnly Flag (0) |
+     * -----------------------------------------------------------------------
+     * </pre>
+     *
+     * @since 1.1
+     */
+    public static final byte LOG_MAGIC_VALUE_V3 = 3;
+
+    private static final int V3_COMMIT_TIMESTAMP_OFFSET = MAGIC_OFFSET + MAGIC_LENGTH;
+    private static final int V3_LEADER_EPOCH_OFFSET =
+            V3_COMMIT_TIMESTAMP_OFFSET + COMMIT_TIMESTAMP_LENGTH;
+    private static final int V3_CRC_OFFSET = V3_LEADER_EPOCH_OFFSET + LEADER_EPOCH_LENGTH;
+    private static final int V3_SCHEMA_ID_OFFSET = V3_CRC_OFFSET + CRC_LENGTH;
+    private static final int V3_ATTRIBUTES_OFFSET = V3_SCHEMA_ID_OFFSET + SCHEMA_ID_LENGTH;
+    private static final int V3_LAST_OFFSET_DELTA_OFFSET = V3_ATTRIBUTES_OFFSET + ATTRIBUTE_LENGTH;
+    private static final int V3_WRITE_CLIENT_ID_OFFSET =
+            V3_LAST_OFFSET_DELTA_OFFSET + LAST_OFFSET_DELTA_LENGTH;
+    private static final int V3_WRITER_EPOCH_OFFSET =
+            V3_WRITE_CLIENT_ID_OFFSET + WRITE_CLIENT_ID_LENGTH;
+    private static final int V3_BATCH_SEQUENCE_OFFSET =
+            V3_WRITER_EPOCH_OFFSET + WRITER_EPOCH_LENGTH;
+    private static final int V3_RECORDS_COUNT_OFFSET =
+            V3_BATCH_SEQUENCE_OFFSET + BATCH_SEQUENCE_LENGTH;
+    private static final int V3_STATISTICS_LENGTH_OFFSET =
+            V3_RECORDS_COUNT_OFFSET + RECORDS_COUNT_LENGTH;
+    private static final int V3_STATISTICS_DATA_OFFSET =
+            V3_STATISTICS_LENGTH_OFFSET + STATISTICS_LENGTH_LENGTH;
+
+    public static final int V3_RECORD_BATCH_HEADER_SIZE = V3_STATISTICS_DATA_OFFSET;
 
     // ----------------------------------------------------------------------------------------
     // Format of Magic Version: V2
@@ -123,8 +221,6 @@ public class LogRecordBatchFormat {
      * @since 1.0
      */
     public static final byte LOG_MAGIC_VALUE_V2 = 2;
-
-    private static final int STATISTICS_LENGTH_LENGTH = 4;
 
     private static final int V2_COMMIT_TIMESTAMP_OFFSET = MAGIC_OFFSET + MAGIC_LENGTH;
     private static final int V2_LEADER_EPOCH_OFFSET =
@@ -278,6 +374,8 @@ public class LogRecordBatchFormat {
                 throw new UnsupportedOperationException("Leader epoch is not supported in V0/V1");
             case LOG_MAGIC_VALUE_V2:
                 return V2_LEADER_EPOCH_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_LEADER_EPOCH_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -291,6 +389,8 @@ public class LogRecordBatchFormat {
                 return V1_CRC_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_CRC_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_CRC_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -304,6 +404,8 @@ public class LogRecordBatchFormat {
                 return V1_SCHEMA_ID_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_SCHEMA_ID_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_SCHEMA_ID_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -317,6 +419,8 @@ public class LogRecordBatchFormat {
                 return V1_ATTRIBUTES_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_ATTRIBUTES_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_ATTRIBUTES_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -330,6 +434,8 @@ public class LogRecordBatchFormat {
                 return V1_LAST_OFFSET_DELTA_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_LAST_OFFSET_DELTA_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_LAST_OFFSET_DELTA_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -343,6 +449,23 @@ public class LogRecordBatchFormat {
                 return V1_WRITE_CLIENT_ID_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_WRITE_CLIENT_ID_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_WRITE_CLIENT_ID_OFFSET;
+            default:
+                throw new IllegalArgumentException("Unsupported magic value " + magic);
+        }
+    }
+
+    /** Get the writer epoch field offset for the given magic version. Only available for V3+. */
+    public static int writerEpochOffset(byte magic) {
+        switch (magic) {
+            case LOG_MAGIC_VALUE_V0:
+            case LOG_MAGIC_VALUE_V1:
+            case LOG_MAGIC_VALUE_V2:
+                throw new UnsupportedOperationException(
+                        "Writer epoch is not supported in magic version " + magic);
+            case LOG_MAGIC_VALUE_V3:
+                return V3_WRITER_EPOCH_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -356,6 +479,8 @@ public class LogRecordBatchFormat {
                 return V1_BATCH_SEQUENCE_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_BATCH_SEQUENCE_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_BATCH_SEQUENCE_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -369,6 +494,8 @@ public class LogRecordBatchFormat {
                 return V1_RECORDS_COUNT_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_RECORDS_COUNT_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_RECORDS_COUNT_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -382,6 +509,8 @@ public class LogRecordBatchFormat {
                 return V1_RECORD_BATCH_HEADER_SIZE;
             case LOG_MAGIC_VALUE_V2:
                 return V2_RECORD_BATCH_HEADER_SIZE;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_RECORD_BATCH_HEADER_SIZE;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -400,6 +529,8 @@ public class LogRecordBatchFormat {
                 return V1_STATISTICS_LENGTH_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_STATISTICS_LENGTH_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_STATISTICS_LENGTH_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }
@@ -418,6 +549,8 @@ public class LogRecordBatchFormat {
                 return V1_STATISTICS_DATA_OFFSET;
             case LOG_MAGIC_VALUE_V2:
                 return V2_STATISTICS_DATA_OFFSET;
+            case LOG_MAGIC_VALUE_V3:
+                return V3_STATISTICS_DATA_OFFSET;
             default:
                 throw new IllegalArgumentException("Unsupported magic value " + magic);
         }

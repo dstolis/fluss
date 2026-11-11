@@ -140,6 +140,23 @@ public interface LogRecordBatch {
     int batchSequence();
 
     /**
+     * Get the last sequence number covered by this log record batch. It equals {@link
+     * #batchSequence()} unless the batch numbers its records individually, which only V3 batches
+     * can do.
+     *
+     * @return batch last sequence
+     */
+    int lastSequence();
+
+    /**
+     * Get the writer epoch of this log record batch. Batches with a magic lower than V3 have no
+     * writer epoch and return {@link LogRecordBatchFormat#NO_WRITER_EPOCH}.
+     *
+     * @return writer epoch
+     */
+    short writerEpoch();
+
+    /**
      * Get leader epoch of this bucket for this log record batch.
      *
      * @return leader epoch
