@@ -54,6 +54,7 @@ import org.apache.fluss.plugin.PluginManager;
 import org.apache.fluss.record.DefaultKvRecordBatch;
 import org.apache.fluss.record.KeyRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
+import org.apache.fluss.record.LogRecordBatchFormat;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.record.ProjectionPushdownCache;
 import org.apache.fluss.remote.RemoteLogFetchInfo;
@@ -90,6 +91,7 @@ import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.entity.StopReplicaData;
 import org.apache.fluss.server.entity.StopReplicaResultForBucket;
 import org.apache.fluss.server.entity.UserContext;
+import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvSnapshotResource;
 import org.apache.fluss.server.kv.scan.ScannerManager;
@@ -192,6 +194,8 @@ public class ReplicaManager implements ServerReconfigurable {
     private static final short PUT_KV_VERSION_WITH_STORAGE_BACKPRESSURE = 2;
 
     private final Configuration conf;
+    // finalized level of the log record batch cluster feature, see ClusterFeatures
+    private volatile int recordBatchVersion;
     private final Scheduler scheduler;
     private final LogManager logManager;
     private final KvManager kvManager;
@@ -324,6 +328,7 @@ public class ReplicaManager implements ServerReconfigurable {
             @Nullable PluginManager pluginManager)
             throws IOException {
         this.conf = conf;
+        this.recordBatchVersion = conf.get(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION);
         this.zkClient = zkClient;
         this.scheduler = scheduler;
         this.localDiskManager = localDiskManager;
@@ -437,6 +442,17 @@ public class ReplicaManager implements ServerReconfigurable {
     public void validate(Configuration newConfig) throws ConfigException {
         // Type validation is already handled by DynamicServerConfig.
         // Here we only do basic sanity checks.
+        int newRecordBatchVersion =
+                newConfig.get(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION);
+        if (newRecordBatchVersion > ClusterFeatures.LOG_RECORD_BATCH_VERSION_MAX) {
+            throw new ConfigException(
+                    String.format(
+                            "This tablet server supports cluster feature '%s' up to level %s, "
+                                    + "but the cluster finalized level %s.",
+                            ClusterFeatures.LOG_RECORD_BATCH_VERSION,
+                            ClusterFeatures.LOG_RECORD_BATCH_VERSION_MAX,
+                            newRecordBatchVersion));
+        }
         int newMinInSyncReplicas =
                 newConfig.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER);
         if (newMinInSyncReplicas <= 0) {
@@ -469,6 +485,7 @@ public class ReplicaManager implements ServerReconfigurable {
     @Override
     public void reconfigure(Configuration newConfig) {
         historicalPartitionManager.reconfigure(newConfig);
+        recordBatchVersion = newConfig.get(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION);
         int newMinInSyncReplicas =
                 newConfig.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER);
         if (newMinInSyncReplicas == minInSyncReplicas) {
@@ -695,6 +712,14 @@ public class ReplicaManager implements ServerReconfigurable {
     @VisibleForTesting
     public DiskUsageMonitor getDiskUsageMonitor() {
         return localDiskManager.getDiskUsageMonitor();
+    }
+
+    /**
+     * Whether this server accepts log record batches of magic V3 from writers, which is the case
+     * once the cluster has finalized the log record batch feature at level 3.
+     */
+    public boolean isRecordBatchV3Enabled() {
+        return recordBatchVersion >= LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
     }
 
     /**

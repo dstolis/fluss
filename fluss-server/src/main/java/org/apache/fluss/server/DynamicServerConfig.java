@@ -48,6 +48,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import static org.apache.fluss.config.ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.config.ConfigOptions.COORDINATOR_REBALANCE_MAX_INFLIGHT_TASKS;
 import static org.apache.fluss.config.ConfigOptions.DATALAKE_FORMAT;
 import static org.apache.fluss.config.ConfigOptions.KV_LEADER_REPLICA_MEMORY_RESERVED;
@@ -85,6 +86,7 @@ class DynamicServerConfig {
                             DATALAKE_FORMAT.key(),
                             COORDINATOR_REBALANCE_MAX_INFLIGHT_TASKS.key(),
                             LOG_RETENTION_ROLL_ACTIVE_SEGMENT_ENABLED.key(),
+                            CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION.key(),
                             LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER.key(),
                             KV_LEADER_REPLICA_MEMORY_RESERVED.key(),
                             KV_SHARED_RATE_LIMITER_BYTES_PER_SEC.key(),

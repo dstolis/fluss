@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 
 /** Test for {@link TabletServerRegistrationJsonSerde}. */
 public class TabletServerRegistrationJsonSerdeTest
@@ -57,17 +58,28 @@ public class TabletServerRegistrationJsonSerdeTest
                                 "CLIENT://localhost:2345,FLUSS://127.0.0.1:2346"),
                         10000,
                         new TabletServerResource(8.0, 1024L));
+        TabletServerRegistration tabletServerRegistration4 =
+                new TabletServerRegistration(
+                        null,
+                        Endpoint.fromListenersString("FLUSS://127.0.0.1:2346"),
+                        10000,
+                        TabletServerResource.unknown(),
+                        Collections.singletonMap("log.record-batch.version", 3));
         return new TabletServerRegistration[] {
-            tabletServerRegistration1, tabletServerRegistration2, tabletServerRegistration3
+            tabletServerRegistration1,
+            tabletServerRegistration2,
+            tabletServerRegistration3,
+            tabletServerRegistration4
         };
     }
 
     @Override
     protected String[] expectedJsons() {
         return new String[] {
-            "{\"version\":4,\"listeners\":\"CLIENT://localhost:2345,FLUSS://127.0.0.1:2346\",\"register_timestamp\":10000}",
-            "{\"version\":4,\"listeners\":\"CLIENT://localhost:2345,FLUSS://127.0.0.1:2346\",\"register_timestamp\":10000,\"rack\":\"cn-hangzhou-server10\"}",
-            "{\"version\":4,\"listeners\":\"CLIENT://localhost:2345,FLUSS://127.0.0.1:2346\",\"register_timestamp\":10000,\"rack\":\"cn-hangzhou-server10\",\"cpu_cores\":8.0,\"memory_bytes\":1024}"
+            "{\"version\":5,\"listeners\":\"CLIENT://localhost:2345,FLUSS://127.0.0.1:2346\",\"register_timestamp\":10000}",
+            "{\"version\":5,\"listeners\":\"CLIENT://localhost:2345,FLUSS://127.0.0.1:2346\",\"register_timestamp\":10000,\"rack\":\"cn-hangzhou-server10\"}",
+            "{\"version\":5,\"listeners\":\"CLIENT://localhost:2345,FLUSS://127.0.0.1:2346\",\"register_timestamp\":10000,\"rack\":\"cn-hangzhou-server10\",\"cpu_cores\":8.0,\"memory_bytes\":1024}",
+            "{\"version\":5,\"listeners\":\"FLUSS://127.0.0.1:2346\",\"register_timestamp\":10000,\"supported_features\":{\"log.record-batch.version\":3}}"
         };
     }
 

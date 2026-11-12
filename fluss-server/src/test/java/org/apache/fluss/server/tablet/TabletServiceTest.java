@@ -30,6 +30,7 @@ import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.record.TestingSchemaGetter;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.encode.ValueDecoder;
+import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
 import org.apache.fluss.rpc.messages.CommitConsumerOffsetsRequest;
 import org.apache.fluss.rpc.messages.CommitConsumerOffsetsResponse;
@@ -62,11 +63,16 @@ import java.net.InetAddress;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static org.apache.fluss.record.TestData.DATA1;
+import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
+import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsV3;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -379,5 +385,43 @@ class TabletServiceTest extends ReplicaTestBase {
                     assertThat(row.getLong(5)).isEqualTo(expectedOffset);
                     assertThat(row.getString(6).toString()).isEqualTo("offset-" + expectedOffset);
                 });
+    }
+
+    @Test
+    void testFetchLogV0RejectsRecordBatchV3() throws Exception {
+        TableBucket v2Bucket = new TableBucket(1L, 0);
+        TableBucket v3Bucket = new TableBucket(1L, 1);
+        Map<TableBucket, FetchLogResultForBucket> results = new HashMap<>();
+        results.put(
+                v2Bucket,
+                FetchLogResultForBucket.records(
+                        v2Bucket,
+                        genMemoryLogRecordsByObject(LOG_MAGIC_VALUE_V2, DATA1),
+                        10L,
+                        -1L,
+                        -1L));
+        results.put(
+                v3Bucket,
+                FetchLogResultForBucket.records(
+                        v3Bucket,
+                        genMemoryLogRecordsV3(DATA1, 1L, (short) 0, 0, false, 0L),
+                        10L,
+                        -1L,
+                        -1L));
+
+        // a reader that negotiated FETCH_LOG v1 gets every batch as stored
+        assertThat(TabletService.rejectRecordBatchV3IfUnsupported(results, (short) 1, true))
+                .isSameAs(results);
+        // before V3 is allowed, the batches are not checked
+        assertThat(TabletService.rejectRecordBatchV3IfUnsupported(results, (short) 0, false))
+                .isSameAs(results);
+
+        Map<TableBucket, FetchLogResultForBucket> checked =
+                TabletService.rejectRecordBatchV3IfUnsupported(results, (short) 0, true);
+        assertThat(checked.get(v2Bucket)).isSameAs(results.get(v2Bucket));
+        assertThat(checked.get(v3Bucket).failed()).isTrue();
+        assertThat(checked.get(v3Bucket).getErrorCode())
+                .isEqualTo(Errors.UNSUPPORTED_VERSION.code());
+        assertThat(checked.get(v3Bucket).getErrorMessage()).contains("require FETCH_LOG version 1");
     }
 }

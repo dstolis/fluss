@@ -43,8 +43,10 @@ public enum ApiKeys {
     GET_METADATA(1012, 0, 0, PUBLIC),
     UPDATE_METADATA(1013, 0, 0, PRIVATE),
     // Version 1: Supports original_partition_name in requests and responses for historical writes.
-    PRODUCE_LOG(1014, 0, 1, PUBLIC),
-    FETCH_LOG(1015, 0, 0, PUBLIC),
+    // Version 2: Supports log record batches of magic V3 (writer epoch and per-record sequence).
+    PRODUCE_LOG(1014, 0, 2, PUBLIC),
+    // Version 1: The client can read log record batches of magic V3.
+    FETCH_LOG(1015, 0, 1, PUBLIC),
 
     // Version 0: Uses lake's encoder for primary key encoding (legacy behavior).
     // Version 1: Uses CompactedKeyEncoder for primary key encoding when bucket key differs from

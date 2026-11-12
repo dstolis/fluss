@@ -28,6 +28,7 @@ Currently, the supported dynamically updatable server configurations include:
 - `server.historical-partition.thread-pool.max-size`: Change the maximum number of threads used for historical partition operations.
 - `netty.server.max-queued-historical-requests`: Change the maximum number of in-flight historical partition operations, including lookups and writes, before throttling new operations.
 - `coordinator.rebalance.max-inflight-tasks`: Control the maximum number of bucket-level rebalance tasks that can run concurrently. The value must be at least `1`.
+- `cluster.feature.log.record-batch.version`: Raise the log record batch format that writers may use. Level `3` allows log record batches of magic V3. Upgrade every TabletServer before raising the level, the CoordinatorServer rejects it otherwise. The level cannot be lowered again.
 
 
 You can update the configuration of a cluster with [Java client](#using-java-client) or [Flink SQL](#using-flink-sql).

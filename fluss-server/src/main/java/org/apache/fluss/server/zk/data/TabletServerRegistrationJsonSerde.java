@@ -27,7 +27,10 @@ import org.apache.fluss.utils.json.JsonSerializer;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 import static org.apache.fluss.config.ConfigOptions.DEFAULT_LISTENER_NAME;
 
@@ -41,7 +44,8 @@ public class TabletServerRegistrationJsonSerde
             new TabletServerRegistrationJsonSerde();
 
     private static final String VERSION_KEY = "version";
-    private static final int VERSION = 4;
+    // Version 5 adds the supported cluster features.
+    private static final int VERSION = 5;
 
     @Deprecated private static final String HOST = "host";
     @Deprecated private static final String PORT = "port";
@@ -50,6 +54,7 @@ public class TabletServerRegistrationJsonSerde
     private static final String RACK = "rack";
     private static final String CPU_CORES = "cpu_cores";
     private static final String MEMORY_BYTES = "memory_bytes";
+    private static final String SUPPORTED_FEATURES = "supported_features";
 
     @Override
     public void serialize(
@@ -71,6 +76,14 @@ public class TabletServerRegistrationJsonSerde
         if (resource.getMemoryBytes() != null) {
             generator.writeNumberField(MEMORY_BYTES, resource.getMemoryBytes());
         }
+        if (!tabletServerRegistration.getSupportedFeatures().isEmpty()) {
+            generator.writeObjectFieldStart(SUPPORTED_FEATURES);
+            for (Map.Entry<String, Integer> feature :
+                    tabletServerRegistration.getSupportedFeatures().entrySet()) {
+                generator.writeNumberField(feature.getKey(), feature.getValue());
+            }
+            generator.writeEndObject();
+        }
         generator.writeEndObject();
     }
 
@@ -80,6 +93,7 @@ public class TabletServerRegistrationJsonSerde
         List<Endpoint> endpoints;
         String rack = null;
         TabletServerResource resource = TabletServerResource.unknown();
+        Map<String, Integer> supportedFeatures = Collections.emptyMap();
         if (version == 1) {
             String host = node.get(HOST).asText();
             int port = node.get(PORT).asInt();
@@ -91,14 +105,23 @@ public class TabletServerRegistrationJsonSerde
             if (node.has(RACK)) {
                 rack = node.get(RACK).asText();
             }
-            if (version >= VERSION) {
+            if (version >= 4) {
                 Double cpuCores = node.has(CPU_CORES) ? node.get(CPU_CORES).asDouble() : null;
                 Long memoryBytes = node.has(MEMORY_BYTES) ? node.get(MEMORY_BYTES).asLong() : null;
                 resource = new TabletServerResource(cpuCores, memoryBytes);
             }
         }
 
+        if (node.has(SUPPORTED_FEATURES)) {
+            supportedFeatures = new HashMap<>();
+            Iterator<Map.Entry<String, JsonNode>> features = node.get(SUPPORTED_FEATURES).fields();
+            while (features.hasNext()) {
+                Map.Entry<String, JsonNode> feature = features.next();
+                supportedFeatures.put(feature.getKey(), feature.getValue().asInt());
+            }
+        }
         long registerTimestamp = node.get(REGISTER_TIMESTAMP).asLong();
-        return new TabletServerRegistration(rack, endpoints, registerTimestamp, resource);
+        return new TabletServerRegistration(
+                rack, endpoints, registerTimestamp, resource, supportedFeatures);
     }
 }

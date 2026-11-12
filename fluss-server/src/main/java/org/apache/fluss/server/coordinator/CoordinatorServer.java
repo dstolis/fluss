@@ -36,6 +36,7 @@ import org.apache.fluss.server.authorizer.AuthorizerLoader;
 import org.apache.fluss.server.coordinator.lease.KvSnapshotLeaseManager;
 import org.apache.fluss.server.coordinator.rebalance.RebalanceManager;
 import org.apache.fluss.server.coordinator.remote.RemoteDirDynamicLoader;
+import org.apache.fluss.server.feature.ClusterFeatureLevelValidator;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerMetadataCache;
 import org.apache.fluss.server.metrics.ServerMetricUtils;
@@ -311,6 +312,7 @@ public class CoordinatorServer extends ServerBase {
             // Register stateless validators for coordinator-side upfront validation
             dynamicConfigManager.register(new HistoricalLookupCacheConfigValidator());
             dynamicConfigManager.register(new DiskWriteLimitConfigValidator());
+            dynamicConfigManager.register(new ClusterFeatureLevelValidator(zkClient, conf));
             rpcServer.getServerReconfigurables().forEach(dynamicConfigManager::register);
             dynamicConfigManager.startup();
 

@@ -38,6 +38,7 @@ import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.authorizer.AuthorizerLoader;
 import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.MetadataManager;
+import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.kv.KvCloseMode;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.scan.ScannerManager;
@@ -399,7 +400,8 @@ public class TabletServer extends ServerBase {
                         rack,
                         Endpoint.loadAdvertisedEndpoints(bindEndpoints, conf),
                         startTime,
-                        tabletServerResource);
+                        tabletServerResource,
+                        ClusterFeatures.supportedFeatures());
 
         while (true) {
             try {
