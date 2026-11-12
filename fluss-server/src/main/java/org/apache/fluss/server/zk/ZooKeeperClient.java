@@ -469,6 +469,41 @@ public class ZooKeeperClient implements AutoCloseable {
     }
 
     /** Get the partition assignment in ZK. */
+    /**
+     * Returns the ids of all tablet servers that hold a replica of a table or partition, whether
+     * they are online or not.
+     */
+    public Set<Integer> getTabletServersWithReplicas() throws Exception {
+        Set<Integer> servers = new HashSet<>();
+        List<Long> tableIds = childIds(ZkData.TableIdsZNode.path());
+        for (TableAssignment assignment : getTablesAssignments(tableIds).values()) {
+            addReplicaServers(assignment, servers);
+        }
+        List<Long> partitionIds = childIds(ZkData.PartitionIdsZNode.path());
+        for (PartitionAssignment assignment : getPartitionsAssignments(partitionIds).values()) {
+            addReplicaServers(assignment, servers);
+        }
+        return servers;
+    }
+
+    private List<Long> childIds(String path) throws Exception {
+        List<Long> ids = new ArrayList<>();
+        for (String child : getChildren(path)) {
+            try {
+                ids.add(Long.parseLong(child));
+            } catch (NumberFormatException e) {
+                LOG.warn("Ignoring unexpected zk node {} under {}.", child, path);
+            }
+        }
+        return ids;
+    }
+
+    private static void addReplicaServers(TableAssignment assignment, Set<Integer> servers) {
+        for (BucketAssignment bucket : assignment.getBucketAssignments().values()) {
+            servers.addAll(bucket.getReplicas());
+        }
+    }
+
     public Optional<PartitionAssignment> getPartitionAssignment(long partitionId) throws Exception {
         Optional<byte[]> bytes = getOrEmpty(PartitionIdZNode.path(partitionId));
         return bytes.map(PartitionIdZNode::decode);

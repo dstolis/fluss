@@ -27,13 +27,17 @@ import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Validates changes of the finalized level of every {@link ClusterFeature} on the coordinator. A
- * level can only be raised once every registered tablet server supports it, and it can never be
- * lowered, because data written at a higher level may not be readable at a lower one.
+ * level can only be raised once every registered tablet server supports it and every tablet server
+ * that holds replicas is registered, so an offline server cannot come back with an older version. A
+ * level can never be lowered, because data written at a higher level may not be readable at a lower
+ * one.
  */
 @Internal
 public class ClusterFeatureLevelValidator implements ServerReconfigurable {
@@ -74,6 +78,16 @@ public class ClusterFeatureLevelValidator implements ServerReconfigurable {
             }
             if (registrations == null) {
                 registrations = tabletServers();
+                List<Integer> offline = offlineTabletServersWithReplicas(registrations);
+                if (!offline.isEmpty()) {
+                    throw new ConfigException(
+                            String.format(
+                                    "Cannot raise cluster feature '%s' to %s, because tablet "
+                                            + "servers %s hold replicas but are offline, so their "
+                                            + "support cannot be checked. Bring them back or move "
+                                            + "their replicas first.",
+                                    feature.featureName(), level, offline));
+                }
             }
             List<Integer> unsupported = new ArrayList<>();
             registrations.forEach(
@@ -97,6 +111,24 @@ public class ClusterFeatureLevelValidator implements ServerReconfigurable {
     @Override
     public void reconfigure(Configuration newConfig) {
         finalized = ClusterFeatureLevels.fromConfig(newConfig);
+    }
+
+    private List<Integer> offlineTabletServersWithReplicas(
+            Map<Integer, TabletServerRegistration> registrations) throws ConfigException {
+        Set<Integer> withReplicas;
+        try {
+            withReplicas = zkClient.getTabletServersWithReplicas();
+        } catch (Exception e) {
+            throw new ConfigException("Failed to read the replica assignments: " + e.getMessage());
+        }
+        List<Integer> offline = new ArrayList<>();
+        for (int serverId : withReplicas) {
+            if (!registrations.containsKey(serverId)) {
+                offline.add(serverId);
+            }
+        }
+        Collections.sort(offline);
+        return offline;
     }
 
     private Map<Integer, TabletServerRegistration> tabletServers() throws ConfigException {

@@ -18,10 +18,15 @@
 package org.apache.fluss.server.feature;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.config.Configuration;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.server.zk.ZooKeeperClient;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /** The cluster features a tablet server registers, see {@link ClusterFeature}. */
@@ -47,5 +52,37 @@ public final class ClusterFeatures {
             Map<String, Integer> supportedFeatures, ClusterFeature feature) {
         Integer level = supportedFeatures.get(feature.featureName());
         return level != null ? level : feature.baselineLevel();
+    }
+
+    /**
+     * Returns the features whose finalized level the registered supported features are below,
+     * described as {@code name (supports x, finalized y)}. Empty if the server supports every
+     * finalized level.
+     */
+    public static List<String> unsupportedFeatures(
+            Map<String, Integer> supportedFeatures, ClusterFeatureLevels finalized) {
+        List<String> unsupported = new ArrayList<>();
+        for (ClusterFeature feature : ClusterFeature.values()) {
+            int supported = supportedLevel(supportedFeatures, feature);
+            int level = finalized.level(feature);
+            if (supported < level) {
+                unsupported.add(
+                        String.format(
+                                "%s (supports %s, finalized %s)",
+                                feature.featureName(), supported, level));
+            }
+        }
+        return unsupported;
+    }
+
+    /**
+     * Reads the finalized levels as the coordinator sees them: the static config overlaid with the
+     * cluster configs stored in ZooKeeper.
+     */
+    public static ClusterFeatureLevels finalizedLevels(
+            Configuration staticConf, ZooKeeperClient zkClient) throws Exception {
+        Configuration conf = new Configuration(staticConf);
+        conf.addAll(Configuration.fromMap(zkClient.fetchEntityConfig()));
+        return ClusterFeatureLevels.fromConfig(conf);
     }
 }

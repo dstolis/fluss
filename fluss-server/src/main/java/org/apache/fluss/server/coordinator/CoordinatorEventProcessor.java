@@ -64,6 +64,7 @@ import org.apache.fluss.rpc.messages.RebalanceResponse;
 import org.apache.fluss.rpc.messages.RemoveServerTagByRackResponse;
 import org.apache.fluss.rpc.messages.RemoveServerTagResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.coordinator.event.AccessContextEvent;
 import org.apache.fluss.server.coordinator.event.AddServerTagByRackEvent;
 import org.apache.fluss.server.coordinator.event.AddServerTagEvent;
@@ -117,6 +118,7 @@ import org.apache.fluss.server.entity.CommitLakeTableSnapshotsData;
 import org.apache.fluss.server.entity.CommitRemoteLogManifestData;
 import org.apache.fluss.server.entity.DeleteReplicaResultForBucket;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
+import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshotStore;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
@@ -185,6 +187,8 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
     private static final Logger LOG = LoggerFactory.getLogger(CoordinatorEventProcessor.class);
 
     private final ZooKeeperClient zooKeeperClient;
+    // the static config, which the cluster configs in ZooKeeper override
+    private final Configuration conf;
     private final ExecutorService ioExecutor;
     private final CoordinatorContext coordinatorContext;
     private final ReplicaCapacityController replicaCapacityController;
@@ -230,6 +234,7 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
             Scheduler scheduler,
             Clock clock) {
         this.zooKeeperClient = zooKeeperClient;
+        this.conf = conf;
         this.serverMetadataCache = serverMetadataCache;
         this.coordinatorChannelManager = coordinatorChannelManager;
         this.coordinatorContext = coordinatorContext;
@@ -417,8 +422,14 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
         long start4loadTabletServer = System.currentTimeMillis();
         Map<Integer, TabletServerRegistration> tabletServerRegistrations =
                 zooKeeperClient.getTabletServers(currentServers);
+        ClusterFeatureLevels finalizedFeatures =
+                ClusterFeatures.finalizedLevels(conf, zooKeeperClient);
         for (int server : currentServers) {
             TabletServerRegistration registration = tabletServerRegistrations.get(server);
+            if (!supportsFinalizedFeatures(
+                    server, registration.getSupportedFeatures(), finalizedFeatures)) {
+                continue;
+            }
             ServerInfo serverInfo =
                     new ServerInfo(
                             server,
@@ -1440,6 +1451,11 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
             return;
         }
 
+        if (!supportsFinalizedFeatures(
+                tabletServerId, newTabletServerEvent.getSupportedFeatures(), finalizedFeatures())) {
+            return;
+        }
+
         // process new tablet server
         LOG.info("New tablet server callback for tablet server {}", tabletServerId);
 
@@ -1486,6 +1502,38 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
         // and offline partitions to see if those tablet servers become leaders for some/all
         // of those
         tableBucketStateMachine.triggerOnlineBucketStateChange();
+    }
+
+    private ClusterFeatureLevels finalizedFeatures() {
+        try {
+            return ClusterFeatures.finalizedLevels(conf, zooKeeperClient);
+        } catch (Exception e) {
+            throw new FlussRuntimeException("Failed to read the finalized cluster features.", e);
+        }
+    }
+
+    /**
+     * Whether a tablet server supports every finalized cluster feature level. A server that does
+     * not, for example an old version that comes back after V3 log record batches were enabled, is
+     * kept out of the live tablet servers: it hosts no replicas and never becomes a leader, because
+     * it could not read data written at the finalized levels.
+     */
+    private static boolean supportsFinalizedFeatures(
+            int tabletServerId,
+            Map<String, Integer> supportedFeatures,
+            ClusterFeatureLevels finalizedFeatures) {
+        List<String> unsupported =
+                ClusterFeatures.unsupportedFeatures(supportedFeatures, finalizedFeatures);
+        if (unsupported.isEmpty()) {
+            return true;
+        }
+        LOG.error(
+                "Tablet server {} does not support the finalized cluster features {}, so it is "
+                        + "not added to the live tablet servers. Upgrade it to a version that "
+                        + "supports them.",
+                tabletServerId,
+                unsupported);
+        return false;
     }
 
     private void processDeadTabletServer(DeadTabletServerEvent deadTabletServerEvent) {

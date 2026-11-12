@@ -25,6 +25,8 @@ import org.apache.fluss.server.metadata.TabletServerResource;
 import org.apache.fluss.server.zk.NOPErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
+import org.apache.fluss.server.zk.data.BucketAssignment;
+import org.apache.fluss.server.zk.data.TableAssignment;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
 import org.apache.fluss.testutils.common.AllCallbackWrapper;
 
@@ -86,6 +88,22 @@ class ClusterFeatureLevelValidatorTest {
         assertThatThrownBy(() -> validator.validate(withLevel(3)))
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining("tablet servers [1] do not support it");
+    }
+
+    @Test
+    void testRaiseLevelRejectedWhileATabletServerWithReplicasIsOffline() throws Exception {
+        registerTabletServer(0, ClusterFeatures.supportedFeatures());
+        // server 5 holds a replica but is not registered, for example while it restarts
+        zkClient.registerTableAssignment(
+                1L, TableAssignment.builder().add(0, BucketAssignment.of(0, 5)).build());
+        ClusterFeatureLevelValidator validator = newValidator();
+
+        assertThatThrownBy(() -> validator.validate(withLevel(3)))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("tablet servers [5] hold replicas but are offline");
+
+        registerTabletServer(5, ClusterFeatures.supportedFeatures());
+        assertThatCode(() -> validator.validate(withLevel(3))).doesNotThrowAnyException();
     }
 
     @Test

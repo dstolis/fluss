@@ -70,6 +70,7 @@ import org.apache.fluss.server.entity.CommitKvSnapshotData;
 import org.apache.fluss.server.entity.CommitRemoteLogManifestData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import org.apache.fluss.server.entity.TablePropertyChanges;
+import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
 import org.apache.fluss.server.kv.snapshot.ZooKeeperCompletedSnapshotHandleStore;
 import org.apache.fluss.server.metadata.BucketMetadata;
@@ -77,6 +78,7 @@ import org.apache.fluss.server.metadata.ClusterMetadata;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.metadata.TableMetadata;
+import org.apache.fluss.server.metadata.TabletServerResource;
 import org.apache.fluss.server.metrics.group.TestingMetricGroups;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
 import org.apache.fluss.server.zk.NOPErrorHandler;
@@ -403,6 +405,47 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
         retry(
                 Duration.ofMinutes(1),
                 () -> assertThat(zookeeperClient.getTableAssignment(t1Id)).isEmpty());
+    }
+
+    @Test
+    void testTabletServerWithoutFinalizedFeaturesIsKeptOut() throws Exception {
+        initCoordinatorChannel();
+        zookeeperClient.upsertEntityConfigs(
+                Collections.singletonMap(
+                        ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION.key(), "3"));
+        // registrations are ephemeral, closing the client removes them again
+        try (ZooKeeperClient client =
+                ZOO_KEEPER_EXTENSION_WRAPPER
+                        .getCustomExtension()
+                        .createZooKeeperClient(NOPErrorHandler.INSTANCE)) {
+            int oldServerId = 7;
+            int newServerId = 8;
+            // an old version, which registers no cluster features
+            client.registerTabletServer(
+                    oldServerId, tabletServerRegistration(oldServerId, Collections.emptyMap()));
+            client.registerTabletServer(
+                    newServerId,
+                    tabletServerRegistration(newServerId, ClusterFeatures.supportedFeatures()));
+
+            // events are handled in order, so once the new server is live, the old one is handled
+            retryVerifyContext(ctx -> assertThat(ctx.liveTabletServerSet()).contains(newServerId));
+            retryVerifyContext(
+                    ctx -> assertThat(ctx.liveTabletServerSet()).doesNotContain(oldServerId));
+        } finally {
+            zookeeperClient.upsertEntityConfigs(Collections.emptyMap());
+        }
+        retryVerifyContext(ctx -> assertThat(ctx.liveTabletServerSet()).doesNotContain(8));
+    }
+
+    private static TabletServerRegistration tabletServerRegistration(
+            int serverId, Map<String, Integer> supportedFeatures) {
+        return new TabletServerRegistration(
+                "rack" + serverId,
+                Endpoint.fromListenersString(
+                        DEFAULT_LISTENER_NAME + "://host" + serverId + ":1234"),
+                System.currentTimeMillis(),
+                TabletServerResource.unknown(),
+                supportedFeatures);
     }
 
     @Test
