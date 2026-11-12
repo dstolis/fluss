@@ -36,6 +36,7 @@ import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForBucket;
 import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.server.log.FetchIsolation;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
@@ -85,8 +86,12 @@ class LogRecordBatchV3ITCase {
                                         server ->
                                                 assertThat(
                                                                 server.getReplicaManager()
-                                                                        .isRecordBatchV3Enabled())
-                                                        .isTrue()));
+                                                                        .getClusterFeatures()
+                                                                        .levels()
+                                                                        .level(
+                                                                                ClusterFeature
+                                                                                        .LOG_RECORD_BATCH_VERSION))
+                                                        .isEqualTo(3)));
 
         // versions are negotiated once per connection, so reconnect to see PRODUCE_LOG v2
         for (ServerNode node : FLUSS_CLUSTER_EXTENSION.getTabletServerNodes()) {

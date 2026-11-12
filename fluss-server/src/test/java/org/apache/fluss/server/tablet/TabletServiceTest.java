@@ -39,6 +39,8 @@ import org.apache.fluss.rpc.messages.PbCommitConsumerOffsetsResponseBucket;
 import org.apache.fluss.rpc.netty.server.Session;
 import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.MetadataManager;
@@ -84,6 +86,8 @@ class TabletServiceTest extends ReplicaTestBase {
     private static final String GROUP_ID = "worker-commits";
     private static final TableBucket SOURCE_BUCKET = new TableBucket(1L, 0);
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(10);
+    private static final ClusterFeatureLevels V3_FINALIZED =
+            ClusterFeatureLevels.baseline().with(ClusterFeature.LOG_RECORD_BATCH_VERSION, 3);
 
     private LakeCatalogDynamicLoader lakeCatalogLoader;
     private MetadataManager metadataManager;
@@ -410,18 +414,21 @@ class TabletServiceTest extends ReplicaTestBase {
                         -1L));
 
         // a reader that negotiated FETCH_LOG v1 gets every batch as stored
-        assertThat(TabletService.rejectRecordBatchV3IfUnsupported(results, (short) 1, true))
+        assertThat(TabletService.rejectUnreadableRecordBatches(results, (short) 1, V3_FINALIZED))
                 .isSameAs(results);
         // before V3 is allowed, the batches are not checked
-        assertThat(TabletService.rejectRecordBatchV3IfUnsupported(results, (short) 0, false))
+        assertThat(
+                        TabletService.rejectUnreadableRecordBatches(
+                                results, (short) 0, ClusterFeatureLevels.baseline()))
                 .isSameAs(results);
 
         Map<TableBucket, FetchLogResultForBucket> checked =
-                TabletService.rejectRecordBatchV3IfUnsupported(results, (short) 0, true);
+                TabletService.rejectUnreadableRecordBatches(results, (short) 0, V3_FINALIZED);
         assertThat(checked.get(v2Bucket)).isSameAs(results.get(v2Bucket));
         assertThat(checked.get(v3Bucket).failed()).isTrue();
         assertThat(checked.get(v3Bucket).getErrorCode())
                 .isEqualTo(Errors.UNSUPPORTED_VERSION.code());
-        assertThat(checked.get(v3Bucket).getErrorMessage()).contains("require FETCH_LOG version 1");
+        assertThat(checked.get(v3Bucket).getErrorMessage())
+                .contains("FETCH_LOG version 0 reads record batches up to magic v2");
     }
 }

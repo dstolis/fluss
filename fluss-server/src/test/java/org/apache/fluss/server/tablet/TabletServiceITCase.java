@@ -1074,8 +1074,7 @@ public class TabletServiceITCase {
                         .findFirst()
                         .get();
         // clients negotiate version 1 and keep writing the existing formats
-        assertThat(produceLog.getMaxVersion())
-                .isEqualTo(TabletService.PRODUCE_LOG_RECORD_BATCH_V3_MIN_VERSION - 1);
+        assertThat(produceLog.getMaxVersion()).isEqualTo((short) 1);
     }
 
     @Test
@@ -1101,7 +1100,8 @@ public class TabletServiceITCase {
                                         .get())
                 .cause()
                 .isInstanceOf(UnsupportedVersionException.class)
-                .hasMessageContaining("PRODUCE_LOG version 2");
+                .hasMessageContaining(
+                        "PRODUCE_LOG version 1 carries cluster feature 'log.record-batch.version' up to level 2");
     }
 
     @Test

@@ -349,6 +349,8 @@ public class TabletServer extends ServerBase {
             dynamicConfigManager.register(replicaManager.getKvSnapshotContext());
             // Register replicaManager to dynamicConfigManager for dynamic config
             dynamicConfigManager.register(replicaManager);
+            // Register the finalized cluster feature levels, which gate new data formats.
+            dynamicConfigManager.register(replicaManager.getClusterFeatures());
             // Register localDiskManager for dynamic disk write-limit and recover ratios.
             dynamicConfigManager.register(localDiskManager);
             rpcServer.getServerReconfigurables().forEach(dynamicConfigManager::register);

@@ -19,7 +19,6 @@ package org.apache.fluss.server.tablet;
 
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.cluster.ServerType;
-import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.exception.ApiException;
 import org.apache.fluss.exception.AuthorizationException;
 import org.apache.fluss.exception.InvalidScanRequestException;
@@ -29,7 +28,6 @@ import org.apache.fluss.exception.ScannerExpiredException;
 import org.apache.fluss.exception.StaleMetadataException;
 import org.apache.fluss.exception.UnknownScannerIdException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
-import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -86,7 +84,6 @@ import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrResponse;
 import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsRequest;
 import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsResponse;
-import org.apache.fluss.rpc.messages.PbApiVersion;
 import org.apache.fluss.rpc.messages.PbFetchLogReqForTable;
 import org.apache.fluss.rpc.messages.PbScanReqForBucket;
 import org.apache.fluss.rpc.messages.PrefixLookupRequest;
@@ -107,6 +104,8 @@ import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.FetchLogReadPreference;
 import org.apache.fluss.rpc.protocol.MergeMode;
+import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
 import org.apache.fluss.server.DynamicConfigManager;
@@ -123,7 +122,6 @@ import org.apache.fluss.server.entity.ProduceLogDataForBucket;
 import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.entity.StopReplicaData;
 import org.apache.fluss.server.entity.UserContext;
-import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.kv.scan.OpenScanResult;
 import org.apache.fluss.server.kv.scan.ScannerContext;
 import org.apache.fluss.server.kv.scan.ScannerManager;
@@ -163,7 +161,7 @@ import java.util.function.Function;
 import java.util.function.ToIntFunction;
 import java.util.stream.Collectors;
 
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.hasHistoricalLookup;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.hasHistoricalProduce;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.hasHistoricalPut;
@@ -205,12 +203,6 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPutKvDataFor
 /** An RPC Gateway service for tablet server. */
 public final class TabletService extends RpcServiceBase
         implements TabletServerGateway, MetadataViewProvider {
-
-    /** The first PRODUCE_LOG version whose requests may carry log record batches of magic V3. */
-    @VisibleForTesting static final short PRODUCE_LOG_RECORD_BATCH_V3_MIN_VERSION = 2;
-
-    /** The first FETCH_LOG version whose responses may carry log record batches of magic V3. */
-    @VisibleForTesting static final short FETCH_LOG_RECORD_BATCH_V3_MIN_VERSION = 1;
 
     private final String serviceName;
     private final ReplicaManager replicaManager;
@@ -286,25 +278,18 @@ public final class TabletService extends RpcServiceBase
     public void shutdown() {}
 
     /**
-     * Advertises the {@code PRODUCE_LOG} versions that may carry log record batches of magic V3
-     * only once this server accepts them, so a client writes V3 only to a server that takes it.
-     * Clients negotiate versions once per connection, so they see the change after reconnecting.
+     * Advertises only the API versions whose data the cluster has finalized, see {@link
+     * ApiFeatureContracts}. For example, the {@code PRODUCE_LOG} version that may carry log record
+     * batches of magic V3 is only advertised once the cluster allows them. Clients negotiate
+     * versions once per connection, so they see the change after reconnecting.
      */
     @Override
     public CompletableFuture<ApiVersionsResponse> apiVersions(ApiVersionsRequest request) {
         return super.apiVersions(request)
                 .thenApply(
                         response -> {
-                            if (!replicaManager.isRecordBatchV3Enabled()) {
-                                for (PbApiVersion version : response.getApiVersionsList()) {
-                                    if (version.getApiKey() == ApiKeys.PRODUCE_LOG.id
-                                            && version.getMaxVersion()
-                                                    >= PRODUCE_LOG_RECORD_BATCH_V3_MIN_VERSION) {
-                                        version.setMaxVersion(
-                                                PRODUCE_LOG_RECORD_BATCH_V3_MIN_VERSION - 1);
-                                    }
-                                }
-                            }
+                            ApiFeatureContracts.capAdvertisedVersions(
+                                    response.getApiVersionsList(), finalizedFeatures());
                             return response;
                         });
     }
@@ -326,7 +311,7 @@ public final class TabletService extends RpcServiceBase
                 routingErrors);
 
         List<ProduceLogDataForBucket> produceLogData = toProduceLogDataForBuckets(request);
-        validateRecordBatchMagic(produceLogData, currentSession().getApiVersion());
+        validateRecordBatchFormat(produceLogData, currentSession().getApiVersion());
         if (!routingErrors.isEmpty()) {
             produceLogData.removeIf(
                     bucketData -> routingErrors.containsKey(bucketData.tableBucket()));
@@ -365,34 +350,20 @@ public final class TabletService extends RpcServiceBase
     }
 
     /**
-     * Rejects log record batches of magic V3 unless the client negotiated a {@code PRODUCE_LOG}
-     * version that supports them and this server is allowed to write them. Otherwise an older
-     * replica or client could receive batches it cannot read.
+     * Rejects log record batches whose format the request version cannot carry or the cluster has
+     * not finalized, so no replica or reader receives batches it cannot read.
      */
-    private void validateRecordBatchMagic(
+    private void validateRecordBatchFormat(
             List<ProduceLogDataForBucket> produceLogData, short apiVersion) {
+        ClusterFeatureLevels finalized = finalizedFeatures();
         for (ProduceLogDataForBucket bucketData : produceLogData) {
             for (LogRecordBatch batch : bucketData.records().batches()) {
-                if (batch.magic() < LOG_MAGIC_VALUE_V3) {
-                    continue;
-                }
-                if (apiVersion < PRODUCE_LOG_RECORD_BATCH_V3_MIN_VERSION) {
-                    throw new UnsupportedVersionException(
-                            "Log record batches of magic v3 require PRODUCE_LOG version "
-                                    + PRODUCE_LOG_RECORD_BATCH_V3_MIN_VERSION
-                                    + " or newer, but the request uses version "
-                                    + apiVersion
-                                    + '.');
-                }
-                if (!replicaManager.isRecordBatchV3Enabled()) {
-                    throw new UnsupportedVersionException(
-                            "Log record batches of magic v3 are not enabled, because the cluster "
-                                    + "has not finalized level 3 of cluster feature '"
-                                    + ClusterFeatures.LOG_RECORD_BATCH_VERSION
-                                    + "', see '"
-                                    + ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION.key()
-                                    + "'.");
-                }
+                ApiFeatureContracts.checkWrite(
+                        ApiKeys.PRODUCE_LOG,
+                        apiVersion,
+                        LOG_RECORD_BATCH_VERSION,
+                        batch.magic(),
+                        finalized);
             }
         }
     }
@@ -466,60 +437,65 @@ public final class TabletService extends RpcServiceBase
                 fetchResponseMap ->
                         response.complete(
                                 makeFetchLogResponse(
-                                        rejectRecordBatchV3IfUnsupported(
-                                                fetchResponseMap,
-                                                apiVersion,
-                                                replicaManager.isRecordBatchV3Enabled()),
+                                        rejectUnreadableRecordBatches(
+                                                fetchResponseMap, apiVersion, finalizedFeatures()),
                                         errorResponseMap)));
         return response;
     }
 
     /**
-     * Replaces the result of every bucket whose records contain a log record batch of magic V3 with
-     * an {@link Errors#UNSUPPORTED_VERSION} error, unless the reader negotiated a {@code FETCH_LOG}
-     * version that can read them. A V3-capable follower or client then reconnects and negotiates a
-     * newer version.
+     * Replaces the result of every bucket whose records contain a log record batch the reader's
+     * {@code FETCH_LOG} version cannot read with an {@link Errors#UNSUPPORTED_VERSION} error. A
+     * reader that supports a newer version then reconnects and negotiates it.
      *
-     * <p>V3 batches can only exist once the cluster allows them, so the batches are only checked
-     * after that.
+     * <p>Batches above the reader's level can only exist once the cluster has finalized a higher
+     * level, so the batches are only checked after that.
      */
     @VisibleForTesting
-    static Map<TableBucket, FetchLogResultForBucket> rejectRecordBatchV3IfUnsupported(
+    static Map<TableBucket, FetchLogResultForBucket> rejectUnreadableRecordBatches(
             Map<TableBucket, FetchLogResultForBucket> fetchResponseMap,
             short apiVersion,
-            boolean recordBatchV3Enabled) {
-        if (apiVersion >= FETCH_LOG_RECORD_BATCH_V3_MIN_VERSION || !recordBatchV3Enabled) {
+            ClusterFeatureLevels finalized) {
+        int readableLevel =
+                ApiFeatureContracts.maxLevel(
+                        ApiKeys.FETCH_LOG, apiVersion, LOG_RECORD_BATCH_VERSION);
+        if (finalized.level(LOG_RECORD_BATCH_VERSION) <= readableLevel) {
             return fetchResponseMap;
         }
         Map<TableBucket, FetchLogResultForBucket> checked = new HashMap<>(fetchResponseMap);
         for (Map.Entry<TableBucket, FetchLogResultForBucket> entry : checked.entrySet()) {
             FetchLogResultForBucket result = entry.getValue();
-            if (!result.failed()
-                    && result.records() != null
-                    && containsRecordBatchV3(result.records())) {
+            if (result.failed() || result.records() == null) {
+                continue;
+            }
+            int batchLevel = highestBatchMagic(result.records());
+            if (!ApiFeatureContracts.canRead(
+                    ApiKeys.FETCH_LOG, apiVersion, LOG_RECORD_BATCH_VERSION, batchLevel)) {
                 entry.setValue(
                         FetchLogResultForBucket.error(
                                 entry.getKey(),
                                 new ApiError(
                                         Errors.UNSUPPORTED_VERSION,
-                                        "The log contains record batches of magic v3, which "
-                                                + "require FETCH_LOG version "
-                                                + FETCH_LOG_RECORD_BATCH_V3_MIN_VERSION
-                                                + " or newer, but the request uses version "
-                                                + apiVersion
-                                                + '.')));
+                                        String.format(
+                                                "The log contains record batches of magic v%s, "
+                                                        + "but FETCH_LOG version %s reads "
+                                                        + "record batches up to magic v%s.",
+                                                batchLevel, apiVersion, readableLevel))));
             }
         }
         return checked;
     }
 
-    private static boolean containsRecordBatchV3(LogRecords records) {
+    private static int highestBatchMagic(LogRecords records) {
+        int highest = 0;
         for (LogRecordBatch batch : records.batches()) {
-            if (batch.magic() >= LOG_MAGIC_VALUE_V3) {
-                return true;
-            }
+            highest = Math.max(highest, batch.magic());
         }
-        return false;
+        return highest;
+    }
+
+    private ClusterFeatureLevels finalizedFeatures() {
+        return replicaManager.getClusterFeatures().levels();
     }
 
     private static FetchParams getFetchParams(FetchLogRequest request) {
