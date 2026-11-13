@@ -28,6 +28,7 @@ import org.apache.fluss.exception.ScannerExpiredException;
 import org.apache.fluss.exception.StaleMetadataException;
 import org.apache.fluss.exception.UnknownScannerIdException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
+import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -326,7 +327,7 @@ public final class TabletService extends RpcServiceBase
                 routingErrors);
 
         List<ProduceLogDataForBucket> produceLogData = toProduceLogDataForBuckets(request);
-        validateRecordBatchFormat(produceLogData, currentSession().getApiVersion());
+        collectUnfinalizedFormatErrors(produceLogData, finalizedFeatures(), routingErrors);
         if (!routingErrors.isEmpty()) {
             produceLogData.removeIf(
                     bucketData -> routingErrors.containsKey(bucketData.tableBucket()));
@@ -365,20 +366,29 @@ public final class TabletService extends RpcServiceBase
     }
 
     /**
-     * Rejects log record batches whose format the request version cannot carry or the cluster has
-     * not finalized, so no replica or reader receives batches it cannot read.
+     * Rejects the buckets whose log record batches have a format the cluster has not finalized, so
+     * no replica or reader receives batches it cannot read. Such a bucket is left out of the append
+     * and answered with the error, like a bucket with a routing error.
+     *
+     * <p>The version of the request is not checked. The finalized level is a property of the
+     * cluster, and a writer that learned it from one tablet server also uses the format on
+     * connections that negotiated their versions before the level was finalized.
      */
-    private void validateRecordBatchFormat(
-            List<ProduceLogDataForBucket> produceLogData, short apiVersion) {
-        ClusterFeatureLevels finalized = finalizedFeatures();
+    @VisibleForTesting
+    static void collectUnfinalizedFormatErrors(
+            List<ProduceLogDataForBucket> produceLogData,
+            ClusterFeatureLevels finalized,
+            Map<TableBucket, ProduceLogResultForBucket> errors) {
         for (ProduceLogDataForBucket bucketData : produceLogData) {
-            for (LogRecordBatch batch : bucketData.records().batches()) {
-                ApiFeatureContracts.checkWrite(
-                        ApiKeys.PRODUCE_LOG,
-                        apiVersion,
-                        LOG_RECORD_BATCH_VERSION,
-                        batch.magic(),
-                        finalized);
+            TableBucket tb = bucketData.tableBucket();
+            try {
+                for (LogRecordBatch batch : bucketData.records().batches()) {
+                    ApiFeatureContracts.checkWrite(
+                            LOG_RECORD_BATCH_VERSION, batch.magic(), finalized);
+                }
+            } catch (UnsupportedVersionException e) {
+                errors.putIfAbsent(
+                        tb, new ProduceLogResultForBucket(tb, ApiError.fromThrowable(e)));
             }
         }
     }

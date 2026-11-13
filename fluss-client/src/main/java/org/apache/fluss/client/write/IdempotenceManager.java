@@ -494,6 +494,13 @@ public class IdempotenceManager {
         }
 
         if (batch.hasWriterEpoch()) {
+            if (error == Errors.UNSUPPORTED_VERSION) {
+                // The leader has not applied the cluster feature level that allows V3 yet. The
+                // writer only writes V3 once a tablet server reported the level, and the level is
+                // never lowered, so the leader accepts the batch once it has applied the level.
+                // The leader rejected the batch before writing it, so it is resent as it is.
+                return true;
+            }
             if (error == Errors.INVALID_WRITER_EPOCH_EXCEPTION) {
                 // The batch was sent before an epoch bump that renumbered it, and the server has
                 // already seen the new epoch. The renumbered batch can be retried.

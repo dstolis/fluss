@@ -43,8 +43,10 @@ import static org.apache.fluss.utils.Preconditions.checkState;
  * <ul>
  *   <li>{@link Access#WRITE}: the API sends data to the server. A version that can carry a level
  *       above the finalized level is not advertised, so clients only write data the whole cluster
- *       can read, and the server rejects data above the finalized level or above the version's
- *       level.
+ *       can read, and the server rejects data above the finalized level. The server does not check
+ *       the version of the request: the finalized level is a property of the cluster, and a writer
+ *       that learned it from one server also writes it on connections that negotiated their
+ *       versions before.
  *   <li>{@link Access#READ}: the API returns data to the reader. Every version is advertised, and
  *       data above the level of the reader's version must not be returned as stored.
  * </ul>
@@ -127,29 +129,12 @@ public final class ApiFeatureContracts {
     }
 
     /**
-     * Checks that data of the given level may be written with the given API version.
+     * Checks that data of the given level may be written, whatever the API version of the request.
      *
-     * @throws UnsupportedVersionException if the API version cannot carry the level, or the cluster
-     *     has not finalized it yet
+     * @throws UnsupportedVersionException if the cluster has not finalized the level yet
      */
     public static void checkWrite(
-            ApiKeys api,
-            short apiVersion,
-            ClusterFeature feature,
-            int dataLevel,
-            ClusterFeatureLevels finalized) {
-        int versionLevel = maxLevel(api, apiVersion, feature);
-        if (dataLevel > versionLevel) {
-            throw new UnsupportedVersionException(
-                    String.format(
-                            "%s version %s carries cluster feature '%s' up to level %s, "
-                                    + "but the request contains data of level %s.",
-                            api.name(),
-                            apiVersion,
-                            feature.featureName(),
-                            versionLevel,
-                            dataLevel));
-        }
+            ClusterFeature feature, int dataLevel, ClusterFeatureLevels finalized) {
         int finalizedLevel = finalized.level(feature);
         if (dataLevel > finalizedLevel) {
             throw new UnsupportedVersionException(

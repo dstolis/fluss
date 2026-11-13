@@ -26,7 +26,6 @@ import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.InvalidBucketRoutingException;
 import org.apache.fluss.exception.InvalidRequiredAcksException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
-import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.metadata.KvFormat;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.PhysicalTablePath;
@@ -63,6 +62,7 @@ import org.apache.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import org.apache.fluss.rpc.messages.PbLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbNotifyLeaderAndIsrReqForBucket;
 import org.apache.fluss.rpc.messages.PbPrefixLookupRespForBucket;
+import org.apache.fluss.rpc.messages.PbProduceLogRespForBucket;
 import org.apache.fluss.rpc.messages.PbPutKvRespForBucket;
 import org.apache.fluss.rpc.messages.PbTableStatsRespForBucket;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
@@ -1100,21 +1100,25 @@ public class TabletServiceITCase {
                 FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(
                         FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(tb));
 
-        assertThatThrownBy(
-                        () ->
-                                leaderGateWay
-                                        .produceLog(
-                                                newProduceLogRequest(
-                                                        tableId,
-                                                        0,
-                                                        1,
-                                                        genMemoryLogRecordsV3(
-                                                                DATA1, 1L, (short) 0, 0, true, 0L)))
-                                        .get())
-                .cause()
-                .isInstanceOf(UnsupportedVersionException.class)
-                .hasMessageContaining(
-                        "PRODUCE_LOG version 1 carries cluster feature 'log.record-batch.version' up to level 2");
+        ProduceLogResponse response =
+                leaderGateWay
+                        .produceLog(
+                                newProduceLogRequest(
+                                        tableId,
+                                        0,
+                                        1,
+                                        genMemoryLogRecordsV3(DATA1, 1L, (short) 0, 0, true, 0L)))
+                        .get();
+
+        // the bucket is rejected with an error the writer can retry, and nothing is written
+        assertThat(response.getBucketsRespsCount()).isEqualTo(1);
+        PbProduceLogRespForBucket bucketResp = response.getBucketsRespsList().get(0);
+        assertThat(bucketResp.getErrorCode()).isEqualTo(Errors.UNSUPPORTED_VERSION.code());
+        assertThat(bucketResp.getErrorMessage())
+                .contains("the cluster has finalized level 2")
+                .contains("cluster.feature.log.record-batch.version");
+        assertThat(FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(tb).getLocalLogEndOffset())
+                .isZero();
     }
 
     @Test

@@ -35,9 +35,7 @@ import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.messages.ApiMessage;
 import org.apache.fluss.rpc.messages.ProduceLogRequest;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
-import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
-import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
 import org.apache.fluss.server.entity.ProduceLogDataForBucket;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
 import org.apache.fluss.utils.ExponentialBackoff;
@@ -60,7 +58,6 @@ import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH_PK;
-import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeProduceLogResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toProduceLogDataForBuckets;
 import static org.apache.fluss.testutils.DataTestUtils.row;
@@ -291,49 +288,40 @@ final class SenderWriterEpochTest {
     }
 
     /**
-     * API versions are negotiated per connection. Once V3 writes are enabled, a writer that
-     * reconnects to one tablet server negotiates the {@code PRODUCE_LOG} version that carries V3
-     * with that server only, while its older connections to the other servers still carry the
-     * formats before V3. Every batch must have a format the connection to its leader carries,
-     * otherwise the leader rejects it.
+     * A writer writes V3 once one tablet server reports that the cluster allows it, also to the
+     * leaders it connected to before. A leader that has not applied the level yet rejects the batch
+     * before writing it, so the batch is resent as it is until the leader accepts it.
      */
     @Test
-    void testBatchFormatIsCarriedByProduceLogVersionOfItsLeader() throws Exception {
-        // the writer only reconnected to the leader of bucket 0 after V3 writes were enabled
+    void testV3BatchRejectedBeforeLeaderAppliedTheLevelIsRetried() throws Exception {
+        // only the leader of bucket 0 reported the level, the connection to the leader of
+        // bucket 1 negotiated its versions before
         metadataUpdater.setNegotiatedProduceLogVersion((short) 1);
         metadataUpdater.setNegotiatedProduceLogVersion(
                 metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb1), (short) 2);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
+        long writerId = idempotenceManager.writerId();
 
-        appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> {});
-        appendToAccumulator(tb2, row(2, "b"), (tb, leo, e) -> {});
+        CompletableFuture<Exception> future = new CompletableFuture<>();
+        appendToAccumulator(tb2, row(1, "a"), (tb, leo, e) -> future.complete(e));
         sender1.runOnce();
+        assertWriterEpochEquals(tb2, (ProduceLogRequest) getRequest(tb2, 0), 0);
 
-        assertBatchFormatCarriedByLeader(tb1);
-        assertBatchFormatCarriedByLeader(tb2);
-    }
+        // the leader of bucket 1 has not applied the level yet
+        finishIdempotentProduceLogRequest(
+                0, tb2, 0, createProduceLogResponse(tb2, Errors.UNSUPPORTED_VERSION));
+        sender1.runOnce();
+        assertThat(future).isNotDone();
 
-    private void assertBatchFormatCarriedByLeader(TableBucket tb) {
-        int leader = metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb);
-        short produceLogVersion =
-                metadataUpdater
-                        .negotiatedApiVersion(
-                                metadataUpdater.getCluster().getTabletServer(leader),
-                                ApiKeys.PRODUCE_LOG)
-                        .get();
-        LogRecordBatch batch =
-                getProduceLogRecords((ProduceLogRequest) getRequest(tb, 0), tb)
-                        .batchIterator()
-                        .next();
-        assertThat((int) batch.magic())
-                .as(
-                        "magic of the batch sent to the leader of %s with PRODUCE_LOG v%s",
-                        tb, produceLogVersion)
-                .isLessThanOrEqualTo(
-                        ApiFeatureContracts.maxLevel(
-                                ApiKeys.PRODUCE_LOG, produceLogVersion, LOG_RECORD_BATCH_VERSION));
+        // the same batch is accepted once the leader applied the level
+        assertWriterEpochEquals(tb2, (ProduceLogRequest) getRequest(tb2, 0), 0);
+        finishIdempotentProduceLogRequest(0, tb2, 0, createProduceLogResponse(tb2, 0L, 1L));
+        sender1.runOnce();
+        assertThat(future.get()).isNull();
+        assertThat(idempotenceManager.writerId()).isEqualTo(writerId);
+        assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 0);
     }
 
     private static void assertWriterEpochEquals(
@@ -390,10 +378,10 @@ final class SenderWriterEpochTest {
                 (TestTabletServerGateway)
                         metadataUpdater.newTabletServerClientForNode(
                                 metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
-        ApiMessage request = getRequest(tb1, index);
+        ApiMessage request = getRequest(tb, index);
         assertThat(request).isInstanceOf(ProduceLogRequest.class);
-        assertThat(hasIdempotentRecords(tb1, (ProduceLogRequest) request)).isTrue();
-        assertBatchSequenceEquals(tb1, (ProduceLogRequest) request, batchSequence);
+        assertThat(hasIdempotentRecords(tb, (ProduceLogRequest) request)).isTrue();
+        assertBatchSequenceEquals(tb, (ProduceLogRequest) request, batchSequence);
         gateway.response(index, response);
     }
 

@@ -105,46 +105,16 @@ class ApiFeatureContractsTest {
 
     @Test
     void testCheckWrite() {
-        assertThatCode(
-                        () ->
-                                ApiFeatureContracts.checkWrite(
-                                        ApiKeys.PRODUCE_LOG,
-                                        (short) 2,
-                                        LOG_RECORD_BATCH_VERSION,
-                                        3,
-                                        V3))
+        assertThatCode(() -> ApiFeatureContracts.checkWrite(LOG_RECORD_BATCH_VERSION, 3, V3))
                 .doesNotThrowAnyException();
-        assertThatCode(
-                        () ->
-                                ApiFeatureContracts.checkWrite(
-                                        ApiKeys.PRODUCE_LOG,
-                                        (short) 1,
-                                        LOG_RECORD_BATCH_VERSION,
-                                        2,
-                                        BASELINE))
+        assertThatCode(() -> ApiFeatureContracts.checkWrite(LOG_RECORD_BATCH_VERSION, 2, V3))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> ApiFeatureContracts.checkWrite(LOG_RECORD_BATCH_VERSION, 2, BASELINE))
                 .doesNotThrowAnyException();
 
-        // the request version cannot carry the level
-        assertThatThrownBy(
-                        () ->
-                                ApiFeatureContracts.checkWrite(
-                                        ApiKeys.PRODUCE_LOG,
-                                        (short) 1,
-                                        LOG_RECORD_BATCH_VERSION,
-                                        3,
-                                        V3))
-                .isInstanceOf(UnsupportedVersionException.class)
-                .hasMessageContaining(
-                        "PRODUCE_LOG version 1 carries cluster feature 'log.record-batch.version' up to level 2");
         // the cluster has not finalized the level
         assertThatThrownBy(
-                        () ->
-                                ApiFeatureContracts.checkWrite(
-                                        ApiKeys.PRODUCE_LOG,
-                                        (short) 2,
-                                        LOG_RECORD_BATCH_VERSION,
-                                        3,
-                                        BASELINE))
+                        () -> ApiFeatureContracts.checkWrite(LOG_RECORD_BATCH_VERSION, 3, BASELINE))
                 .isInstanceOf(UnsupportedVersionException.class)
                 .hasMessageContaining("the cluster has finalized level 2")
                 .hasMessageContaining("cluster.feature.log.record-batch.version");

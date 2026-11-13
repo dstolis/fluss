@@ -32,6 +32,7 @@ import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.encode.ValueDecoder;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
+import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.messages.CommitConsumerOffsetsRequest;
 import org.apache.fluss.rpc.messages.CommitConsumerOffsetsResponse;
 import org.apache.fluss.rpc.messages.FindConsumerGroupOwnerRequest;
@@ -44,6 +45,7 @@ import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.MetadataManager;
+import org.apache.fluss.server.entity.ProduceLogDataForBucket;
 import org.apache.fluss.server.log.FetchParams;
 import org.apache.fluss.server.metadata.BucketMetadata;
 import org.apache.fluss.server.metadata.SystemTables;
@@ -430,5 +432,35 @@ class TabletServiceTest extends ReplicaTestBase {
                 .isEqualTo(Errors.UNSUPPORTED_VERSION.code());
         assertThat(checked.get(v3Bucket).getErrorMessage())
                 .contains("FETCH_LOG version 0 reads record batches up to magic v2");
+    }
+
+    @Test
+    void testProduceRejectsOnlyBucketsWithUnfinalizedFormat() throws Exception {
+        TableBucket v2Bucket = new TableBucket(1L, 0);
+        TableBucket v3Bucket = new TableBucket(1L, 1);
+        List<ProduceLogDataForBucket> produceLogData =
+                Arrays.asList(
+                        new ProduceLogDataForBucket(
+                                v2Bucket,
+                                genMemoryLogRecordsByObject(LOG_MAGIC_VALUE_V2, DATA1),
+                                null),
+                        new ProduceLogDataForBucket(
+                                v3Bucket,
+                                genMemoryLogRecordsV3(DATA1, 1L, (short) 0, 0, false, 0L),
+                                null));
+
+        // once V3 is finalized, every bucket is accepted, whatever the version of the request
+        Map<TableBucket, ProduceLogResultForBucket> errors = new HashMap<>();
+        TabletService.collectUnfinalizedFormatErrors(produceLogData, V3_FINALIZED, errors);
+        assertThat(errors).isEmpty();
+
+        // before that, the V3 bucket is rejected and the other bucket of the request is not
+        TabletService.collectUnfinalizedFormatErrors(
+                produceLogData, ClusterFeatureLevels.baseline(), errors);
+        assertThat(errors).containsOnlyKeys(v3Bucket);
+        assertThat(errors.get(v3Bucket).getErrorCode())
+                .isEqualTo(Errors.UNSUPPORTED_VERSION.code());
+        assertThat(errors.get(v3Bucket).getErrorMessage())
+                .contains("the cluster has finalized level 2");
     }
 }
