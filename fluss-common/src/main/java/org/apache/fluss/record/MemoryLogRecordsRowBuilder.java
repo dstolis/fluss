@@ -174,6 +174,14 @@ public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
         this.perRecordSequence = perRecordSequence;
     }
 
+    public byte magic() {
+        return magic;
+    }
+
+    public short writerEpoch() {
+        return writerEpoch;
+    }
+
     public long writerId() {
         return writerId;
     }

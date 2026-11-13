@@ -55,6 +55,7 @@ import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.InvalidTargetColumnException;
 import org.apache.fluss.exception.InvalidTimestampException;
 import org.apache.fluss.exception.InvalidUpdateVersionException;
+import org.apache.fluss.exception.InvalidWriterEpochException;
 import org.apache.fluss.exception.KvSnapshotNotExistException;
 import org.apache.fluss.exception.KvStorageException;
 import org.apache.fluss.exception.LakeStorageNotConfiguredException;
@@ -319,7 +320,11 @@ public enum Errors {
     CONSUMER_OFFSET_METADATA_TOO_LARGE(
             80,
             "The metadata field of the consumer offset request is too large.",
-            ConsumerOffsetMetadataTooLargeException::new);
+            ConsumerOffsetMetadataTooLargeException::new),
+    INVALID_WRITER_EPOCH_EXCEPTION(
+            81,
+            "The writer epoch of the batch is lower than the current epoch of the writer.",
+            InvalidWriterEpochException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 

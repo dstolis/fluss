@@ -37,7 +37,10 @@ import org.apache.fluss.rpc.messages.ApiVersionsResponse;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForBucket;
+import org.apache.fluss.rpc.messages.PbProduceLogRespForBucket;
+import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.server.entity.FetchReqInfo;
 import org.apache.fluss.server.log.FetchIsolation;
@@ -201,6 +204,83 @@ class LogRecordBatchV3ITCase {
         // every tablet server hosts a replica, so the test also covers the followers
         conf.setInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR, 3);
         return conf;
+    }
+
+    @Test
+    void testWriterEpochAndPerRecordSequence() throws Exception {
+        alterFeatureLevel("3");
+        retry(
+                Duration.ofMinutes(1),
+                () ->
+                        FLUSS_CLUSTER_EXTENSION
+                                .getTabletServers()
+                                .forEach(
+                                        server ->
+                                                assertThat(
+                                                                server.getReplicaManager()
+                                                                        .getClusterFeatures()
+                                                                        .levels()
+                                                                        .level(
+                                                                                ClusterFeature
+                                                                                        .LOG_RECORD_BATCH_VERSION))
+                                                        .isEqualTo(3)));
+        for (ServerNode node : FLUSS_CLUSTER_EXTENSION.getTabletServerNodes()) {
+            FLUSS_CLUSTER_EXTENSION.getRpcClient().disconnect(node).get();
+        }
+        long tableId =
+                createTable(
+                        FLUSS_CLUSTER_EXTENSION,
+                        TablePath.of("fluss", "v3_epoch_table"),
+                        TableDescriptor.builder()
+                                .schema(DATA1_SCHEMA)
+                                .distributedBy(1)
+                                .logFormat(LogFormat.INDEXED)
+                                .build());
+        TableBucket tb = new TableBucket(tableId, 0);
+        FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(tb);
+        TabletServerGateway leader =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(
+                        FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(tb));
+        List<Object[]> records = DATA1.subList(0, 3);
+
+        // sequences 0-2 and 3-5, numbered per record like a Kafka producer
+        assertProduceLogResponse(produce(leader, tableId, records, (short) 0, 0), 0, 0L);
+        assertProduceLogResponse(produce(leader, tableId, records, (short) 0, 3), 0, 3L);
+        // a retry of the last batch gets its original offset back
+        assertProduceLogResponse(produce(leader, tableId, records, (short) 0, 3), 0, 3L);
+        // a gap in the sequence is rejected
+        assertError(
+                produce(leader, tableId, records, (short) 0, 7),
+                Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION);
+        // a new epoch restarts the sequence at 0
+        assertProduceLogResponse(produce(leader, tableId, records, (short) 1, 0), 0, 6L);
+        // a late batch of the older epoch is fenced
+        assertError(
+                produce(leader, tableId, records, (short) 0, 6),
+                Errors.INVALID_WRITER_EPOCH_EXCEPTION);
+    }
+
+    private static ProduceLogResponse produce(
+            TabletServerGateway leader,
+            long tableId,
+            List<Object[]> records,
+            short writerEpoch,
+            int baseSequence)
+            throws Exception {
+        return leader.produceLog(
+                        newProduceLogRequest(
+                                tableId,
+                                0,
+                                -1,
+                                genMemoryLogRecordsV3(
+                                        records, WRITER_ID, writerEpoch, baseSequence, true, 0L)))
+                .get();
+    }
+
+    private static void assertError(ProduceLogResponse response, Errors error) {
+        assertThat(response.getBucketsRespsCount()).isEqualTo(1);
+        PbProduceLogRespForBucket bucketResp = response.getBucketsRespsList().get(0);
+        assertThat(bucketResp.getErrorCode()).isEqualTo(error.code());
     }
 
     private static LogRecords fetchAsOldClient(int leaderId, TableBucket tb) throws Exception {

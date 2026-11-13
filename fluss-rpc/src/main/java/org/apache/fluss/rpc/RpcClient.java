@@ -24,6 +24,7 @@ import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.netty.client.NettyClient;
 import org.apache.fluss.rpc.protocol.ApiKeys;
 
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -82,6 +83,19 @@ public interface RpcClient extends AutoCloseable {
      * @return true if the connection to the node is ready
      */
     boolean isReady(ServerNode node);
+
+    /**
+     * Returns the version of the given API negotiated with the given server, without connecting to
+     * it. It is empty if there is no connection yet, the versions are not negotiated yet, or the
+     * server does not support the API.
+     *
+     * @param node The server node to check
+     * @param apiKey The API to check
+     * @return The negotiated version, if known
+     */
+    default Optional<Short> negotiatedApiVersion(ServerNode node, ApiKeys apiKey) {
+        return Optional.empty();
+    }
 
     /**
      * Send an RPC request to the given server and return a future for the response. If the

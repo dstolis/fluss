@@ -26,6 +26,7 @@ import java.util.Deque;
 import java.util.Optional;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 
 /**
  * This class represents the state of a specific writer id. The batch sequence number is ordered
@@ -39,11 +40,21 @@ public class WriterStateEntry {
     private final long writerId;
     private final Deque<BatchMetadata> batchMetadata = new ArrayDeque<>();
 
+    private short writerEpoch;
     private long lastTimestamp;
 
     public WriterStateEntry(
             long writerId, long lastTimestamp, @Nullable BatchMetadata firstBatchMetadata) {
+        this(writerId, NO_WRITER_EPOCH, lastTimestamp, firstBatchMetadata);
+    }
+
+    public WriterStateEntry(
+            long writerId,
+            short writerEpoch,
+            long lastTimestamp,
+            @Nullable BatchMetadata firstBatchMetadata) {
         this.writerId = writerId;
+        this.writerEpoch = writerEpoch;
         this.lastTimestamp = lastTimestamp;
         if (firstBatchMetadata != null) {
             addBatchMetadata(firstBatchMetadata);
@@ -62,12 +73,20 @@ public class WriterStateEntry {
         return writerId;
     }
 
+    public short writerEpoch() {
+        return writerEpoch;
+    }
+
     public int firstBatchSequence() {
         return isEmpty() ? NO_BATCH_SEQUENCE : batchMetadata.getFirst().batchSequence;
     }
 
     public int lastBatchSequence() {
         return isEmpty() ? NO_BATCH_SEQUENCE : batchMetadata.getLast().batchSequence;
+    }
+
+    public int lastBatchFirstSequence() {
+        return isEmpty() ? NO_BATCH_SEQUENCE : batchMetadata.getLast().firstSequence;
     }
 
     public long firstDataOffset() {
@@ -87,12 +106,30 @@ public class WriterStateEntry {
     }
 
     public void addBath(int batchSequence, long lastOffset, int offsetDelta, long timestamp) {
+        addBath(batchSequence, batchSequence, lastOffset, offsetDelta, timestamp);
+    }
+
+    public void addBath(
+            int firstSequence, int lastSequence, long lastOffset, int offsetDelta, long timestamp) {
         addBatchMetadata(
-                new BatchMetadata(writerId, batchSequence, lastOffset, offsetDelta, timestamp));
+                new BatchMetadata(
+                        writerId, firstSequence, lastSequence, lastOffset, offsetDelta, timestamp));
         this.lastTimestamp = timestamp;
     }
 
+    /**
+     * Moves this entry to a higher writer epoch. The batches of the previous epoch are dropped, as
+     * the writer restarts its sequence from 0.
+     */
+    public void bumpEpoch(short newEpoch) {
+        this.writerEpoch = newEpoch;
+        this.batchMetadata.clear();
+    }
+
     public void update(WriterStateEntry nextEntry) {
+        if (nextEntry.writerEpoch != writerEpoch) {
+            bumpEpoch(nextEntry.writerEpoch);
+        }
         update(nextEntry.lastTimestamp, nextEntry.batchMetadata);
     }
 
@@ -111,7 +148,17 @@ public class WriterStateEntry {
     }
 
     public Optional<BatchMetadata> findDuplicateBatch(LogRecordBatch batch) {
-        return findDuplicateBatch(batch.batchSequence());
+        if (batch.writerEpoch() != writerEpoch) {
+            return Optional.empty();
+        }
+        int firstSequence = batch.batchSequence();
+        int lastSequence = batch.lastSequence();
+        return batchMetadata.stream()
+                .filter(
+                        metadata ->
+                                metadata.firstSequence == firstSequence
+                                        && metadata.batchSequence == lastSequence)
+                .findFirst();
     }
 
     public Optional<BatchMetadata> findDuplicateBatch(int arriveBatchSequence) {
@@ -126,12 +173,15 @@ public class WriterStateEntry {
      */
     public WriterStateEntry withWriterIdAndBatchMetadata(
             long writerId, @Nullable BatchMetadata batchMetadata) {
-        return new WriterStateEntry(writerId, this.lastTimestamp, batchMetadata);
+        return new WriterStateEntry(writerId, this.writerEpoch, this.lastTimestamp, batchMetadata);
     }
 
     /** Metadata of a batch. */
     public static final class BatchMetadata {
         public final long writerId;
+        // First sequence of the batch, equal to batchSequence unless the sequence counts records.
+        public final int firstSequence;
+        // Last sequence of the batch.
         public final int batchSequence;
         public final long lastOffset;
         public final int offsetDelta;
@@ -143,7 +193,18 @@ public class WriterStateEntry {
                 long lastOffset,
                 int offsetDelta,
                 long timestamp) {
+            this(writerId, batchSequence, batchSequence, lastOffset, offsetDelta, timestamp);
+        }
+
+        public BatchMetadata(
+                long writerId,
+                int firstSequence,
+                int batchSequence,
+                long lastOffset,
+                int offsetDelta,
+                long timestamp) {
             this.writerId = writerId;
+            this.firstSequence = firstSequence;
             this.batchSequence = batchSequence;
             this.lastOffset = lastOffset;
             this.offsetDelta = offsetDelta;

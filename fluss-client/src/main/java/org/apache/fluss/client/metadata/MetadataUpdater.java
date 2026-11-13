@@ -39,6 +39,7 @@ import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.AdminReadOnlyGateway;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.protocol.ApiKeys;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -141,6 +142,14 @@ public class MetadataUpdater {
 
     public @Nullable ServerNode getRandomTabletServer() {
         return cluster.getRandomTabletServer();
+    }
+
+    /**
+     * Returns the version of the given API negotiated with the given server, if the client is
+     * already connected to it.
+     */
+    public Optional<Short> negotiatedApiVersion(ServerNode serverNode, ApiKeys apiKey) {
+        return rpcClient.negotiatedApiVersion(serverNode, apiKey);
     }
 
     public CoordinatorGateway newCoordinatorServerClient() {

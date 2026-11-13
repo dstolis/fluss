@@ -162,6 +162,27 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
                 baseLogOffset, schemaId, magic, arrowWriter, outputView, appendOnly, null);
     }
 
+    /**
+     * Builder with limited write size, the memory segment used to serialize records and the given
+     * magic, which writers use to write log record batches of magic V3.
+     */
+    public static MemoryLogRecordsArrowBuilder builder(
+            int schemaId,
+            byte magic,
+            ArrowWriter arrowWriter,
+            AbstractPagedOutputView outputView,
+            boolean appendOnly,
+            @Nullable LogRecordBatchStatisticsCollector statisticsCollector) {
+        return new MemoryLogRecordsArrowBuilder(
+                BUILDER_DEFAULT_OFFSET,
+                schemaId,
+                magic,
+                arrowWriter,
+                outputView,
+                appendOnly,
+                statisticsCollector);
+    }
+
     /** Builder with limited write size and the memory segment used to serialize records. */
     public static MemoryLogRecordsArrowBuilder builder(
             int schemaId,
@@ -287,6 +308,17 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             statisticsCollector.processRow(row);
         }
         reCalculateSizeInBytes = true;
+    }
+
+    public byte magic() {
+        return magic;
+    }
+
+    /**
+     * The epoch of the writer that produced this batch, see {@link #setWriterEpochAndSequenceMode}.
+     */
+    public short writerEpoch() {
+        return batchWriterEpoch;
     }
 
     public long writerId() {

@@ -69,10 +69,10 @@ public class IdempotenceBucketMap {
         return Optional.empty();
     }
 
-    void startBatchSequencesAtBeginning(TableBucket tableBucket, long writerId) {
+    void startBatchSequencesAtBeginning(TableBucket tableBucket, long writerId, short writerEpoch) {
         IdempotenceBucketEntry entry = get(tableBucket);
         if (entry != null) {
-            entry.startBatchSequencesAtBeginning(writerId);
+            entry.startBatchSequencesAtBeginning(writerId, writerEpoch);
         }
     }
 

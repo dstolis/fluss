@@ -36,8 +36,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
+import static org.apache.fluss.utils.Preconditions.checkState;
 
 /** The abstract write batch contains write callback object to wait write request feedback. */
 @Internal
@@ -159,6 +161,31 @@ public abstract class WriteBatch {
     public abstract int batchSequence();
 
     public abstract void abortRecordAppends();
+
+    /**
+     * Whether this batch carries a writer epoch in its header, which only log record batches of
+     * magic V3 do. Batches without one are read by the server with epoch {@code NO_WRITER_EPOCH}.
+     */
+    public boolean hasWriterEpoch() {
+        return false;
+    }
+
+    /** The writer epoch of this batch, {@code NO_WRITER_EPOCH} if it does not carry one. */
+    public short writerEpoch() {
+        return NO_WRITER_EPOCH;
+    }
+
+    /**
+     * Sets the writer epoch of this batch. Batches without a writer epoch in their header only
+     * accept {@code NO_WRITER_EPOCH}.
+     */
+    public void setWriterEpoch(short writerEpoch) {
+        checkState(
+                writerEpoch == NO_WRITER_EPOCH,
+                "Batch for table path %s has no writer epoch, but epoch %s was set.",
+                physicalTablePath,
+                writerEpoch);
+    }
 
     public boolean hasBatchSequence() {
         return batchSequence() != NO_BATCH_SEQUENCE;

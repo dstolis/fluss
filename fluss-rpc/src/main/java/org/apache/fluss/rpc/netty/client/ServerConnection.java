@@ -61,6 +61,7 @@ import java.net.InetSocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -138,6 +139,23 @@ final class ServerConnection {
     public boolean isReady() {
         synchronized (lock) {
             return state == ConnectionState.READY && channel != null && channel.isActive();
+        }
+    }
+
+    /**
+     * Returns the version of the given API that this connection uses for requests, or empty before
+     * the versions are negotiated or when the server does not support the API.
+     */
+    public Optional<Short> negotiatedApiVersion(ApiKeys apiKey) {
+        synchronized (lock) {
+            if (serverApiVersions == null) {
+                return Optional.empty();
+            }
+            try {
+                return Optional.of(serverApiVersions.highestAvailableVersion(apiKey));
+            } catch (UnsupportedVersionException e) {
+                return Optional.empty();
+            }
         }
     }
 

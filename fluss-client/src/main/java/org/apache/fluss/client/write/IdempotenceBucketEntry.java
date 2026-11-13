@@ -29,6 +29,7 @@ import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.function.Consumer;
 
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 
 /** Entry to store the idempotence information of each table-bucket. */
@@ -40,6 +41,13 @@ public class IdempotenceBucketEntry {
 
     /** Writer id used for a given table bucket. */
     private long writerId;
+
+    /**
+     * Writer epoch used for a given table bucket. It only moves to the writer's current epoch once
+     * the bucket's next batch carries an epoch, so batches without one keep their sequence under
+     * the epoch the server already knows for this bucket.
+     */
+    private short writerEpoch;
 
     /** The batch sequence of next bound for a given table bucket. */
     private int nextSequence;
@@ -71,6 +79,7 @@ public class IdempotenceBucketEntry {
     IdempotenceBucketEntry(TableBucket tableBucket) {
         this.tableBucket = tableBucket;
         this.writerId = NO_WRITER_ID;
+        this.writerEpoch = NO_WRITER_EPOCH;
         this.nextSequence = 0;
         this.lastAckedSequence = NO_LAST_ACKED_BATCH_SEQUENCE;
         this.inflightBatchesBySequence = new TreeSet<>(WRITE_BATCH_COMPARATOR);
@@ -78,6 +87,20 @@ public class IdempotenceBucketEntry {
 
     long writerId() {
         return writerId;
+    }
+
+    short writerEpoch() {
+        return writerEpoch;
+    }
+
+    /** Whether every in-flight batch of this bucket carries a writer epoch in its header. */
+    boolean inflightBatchesHaveWriterEpoch() {
+        for (WriteBatch batch : inflightBatchesBySequence) {
+            if (!batch.hasWriterEpoch()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     int nextSequence() {
@@ -90,14 +113,18 @@ public class IdempotenceBucketEntry {
                 : Optional.of(lastAckedSequence);
     }
 
-    void startBatchSequencesAtBeginning(long newWriterId) {
+    void startBatchSequencesAtBeginning(long newWriterId, short newWriterEpoch) {
         final int[] sequence = {0};
         resetSequenceNumbers(
                 inFlightBatch -> {
                     inFlightBatch.resetWriterState(newWriterId, sequence[0]);
+                    if (inFlightBatch.hasWriterEpoch()) {
+                        inFlightBatch.setWriterEpoch(newWriterEpoch);
+                    }
                     sequence[0] += 1;
                 });
         writerId = newWriterId;
+        writerEpoch = newWriterEpoch;
         nextSequence = sequence[0];
         lastAckedSequence = NO_LAST_ACKED_BATCH_SEQUENCE;
     }

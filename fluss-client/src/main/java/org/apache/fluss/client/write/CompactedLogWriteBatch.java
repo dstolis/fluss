@@ -27,6 +27,7 @@ import org.apache.fluss.rpc.messages.ProduceLogRequest;
 
 import javax.annotation.concurrent.NotThreadSafe;
 
+import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
@@ -49,6 +50,30 @@ public final class CompactedLogWriteBatch extends AbstractRowLogWriteBatch<Compa
             AbstractPagedOutputView outputView,
             boolean isHistoricalPartition,
             long createdMs) {
+        this(
+                tableId,
+                bucketId,
+                bucketCount,
+                physicalTablePath,
+                schemaId,
+                writeLimit,
+                outputView,
+                isHistoricalPartition,
+                createdMs,
+                CURRENT_LOG_MAGIC_VALUE);
+    }
+
+    public CompactedLogWriteBatch(
+            long tableId,
+            int bucketId,
+            int bucketCount,
+            PhysicalTablePath physicalTablePath,
+            int schemaId,
+            int writeLimit,
+            AbstractPagedOutputView outputView,
+            boolean isHistoricalPartition,
+            long createdMs,
+            byte magic) {
         super(
                 tableId,
                 bucketId,
@@ -59,7 +84,8 @@ public final class CompactedLogWriteBatch extends AbstractRowLogWriteBatch<Compa
                 isHistoricalPartition,
                 createdMs,
                 outputView,
-                MemoryLogRecordsCompactedBuilder.builder(schemaId, writeLimit, outputView, true),
+                MemoryLogRecordsCompactedBuilder.builder(
+                        schemaId, writeLimit, magic, outputView, true),
                 "Failed to build compacted log record batch.");
     }
 

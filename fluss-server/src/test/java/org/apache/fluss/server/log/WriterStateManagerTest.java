@@ -19,8 +19,11 @@ package org.apache.fluss.server.log;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.InvalidWriterEpochException;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.testutils.DataTestUtils;
 import org.apache.fluss.utils.clock.ManualClock;
 import org.apache.fluss.utils.types.Tuple2;
 
@@ -45,6 +48,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import static org.apache.fluss.record.TestData.DATA1;
 import static org.apache.fluss.server.log.WriterStateManager.listSnapshotFiles;
 import static org.apache.fluss.utils.FlussPaths.offsetFromFile;
 import static org.apache.fluss.utils.FlussPaths.writerSnapshotFile;
@@ -501,6 +505,121 @@ public class WriterStateManagerTest {
         WriterStateEntry loadedWriterState = reloadedStateManager.activeWriters().get(writerId);
         assertThat(loadedWriterState).isNotNull();
         assertThat(loadedWriterState.lastDataOffset()).isEqualTo(0L);
+    }
+
+    @Test
+    void testPerRecordSequenceRanges() throws Exception {
+        // records 0-2, then 3-4
+        appendV3(writerId, (short) 0, 0, 3, 0L, true);
+        appendV3(writerId, (short) 0, 3, 2, 3L, true);
+        WriterStateEntry entry = stateManager.lastEntry(writerId).get();
+        assertThat(entry.lastBatchFirstSequence()).isEqualTo(3);
+        assertThat(entry.lastBatchSequence()).isEqualTo(4);
+
+        // a batch that does not start right after the last record is out of order
+        assertThatThrownBy(() -> appendV3(writerId, (short) 0, 4, 2, 5L, true))
+                .isInstanceOf(OutOfOrderSequenceException.class);
+
+        // a retry of a stored batch matches on epoch, first and last sequence
+        LogRecordBatch retry = batchV3(writerId, (short) 0, 3, 2, 3L, true);
+        assertThat(entry.findDuplicateBatch(retry)).isPresent();
+        assertThat(entry.findDuplicateBatch(batchV3(writerId, (short) 0, 3, 3, 3L, true)))
+                .isNotPresent();
+        assertThat(entry.findDuplicateBatch(batchV3(writerId, (short) 1, 3, 2, 3L, true)))
+                .isNotPresent();
+    }
+
+    @Test
+    void testPerBatchSequenceIgnoresRecordCount() throws Exception {
+        // a KV batch can produce more change log records than it counts sequences
+        appendV3(writerId, (short) 0, 0, 3, 0L, false);
+        appendV3(writerId, (short) 0, 1, 2, 3L, false);
+        assertThat(stateManager.lastEntry(writerId).get().lastBatchSequence()).isEqualTo(1);
+    }
+
+    @Test
+    void testWriterEpochBumpAndFencing() throws Exception {
+        appendV3(writerId, (short) 0, 0, 1, 0L, false);
+        appendV3(writerId, (short) 0, 1, 1, 1L, false);
+
+        // a new epoch must restart the sequence at 0
+        assertThatThrownBy(() -> appendV3(writerId, (short) 1, 2, 1, 2L, false))
+                .isInstanceOf(OutOfOrderSequenceException.class);
+        appendV3(writerId, (short) 1, 0, 1, 2L, false);
+        WriterStateEntry entry = stateManager.lastEntry(writerId).get();
+        assertThat(entry.writerEpoch()).isEqualTo((short) 1);
+        assertThat(entry.lastBatchSequence()).isEqualTo(0);
+
+        // late batches of the older epoch are fenced
+        assertThatThrownBy(() -> appendV3(writerId, (short) 0, 2, 1, 3L, false))
+                .isInstanceOf(InvalidWriterEpochException.class);
+
+        // followers keep what the leader accepted
+        WriterAppendInfo followerAppend = stateManager.prepareUpdate(writerId);
+        followerAppend.append(batchV3(writerId, (short) 0, 2, 1, 3L, false), false, false);
+    }
+
+    @Test
+    void testWriterEpochSurvivesSnapshotReload() throws Exception {
+        appendV3(writerId, (short) 3, 0, 4, 0L, true);
+        stateManager.takeSnapshot();
+
+        WriterStateManager reloaded =
+                new WriterStateManager(
+                        tableBucket,
+                        logDir,
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
+        // the generated batches have commit timestamp 0, so reload at time 0 to keep the writer
+        reloaded.truncateAndReload(0L, 4L, 0L);
+        WriterStateEntry entry = reloaded.lastEntry(writerId).get();
+        assertThat(entry.writerEpoch()).isEqualTo((short) 3);
+        assertThat(entry.lastBatchFirstSequence()).isEqualTo(0);
+        assertThat(entry.lastBatchSequence()).isEqualTo(3);
+        // the retried last batch is still recognised as a duplicate after a restart
+        assertThat(entry.findDuplicateBatch(batchV3(writerId, (short) 3, 0, 4, 0L, true)))
+                .isPresent();
+    }
+
+    private void appendV3(
+            long writerId,
+            short writerEpoch,
+            int baseSequence,
+            int recordCount,
+            long baseOffset,
+            boolean perRecordSequence)
+            throws Exception {
+        LogRecordBatch batch =
+                batchV3(
+                        writerId,
+                        writerEpoch,
+                        baseSequence,
+                        recordCount,
+                        baseOffset,
+                        perRecordSequence);
+        WriterAppendInfo appendInfo = stateManager.prepareUpdate(writerId);
+        appendInfo.append(batch, false, true);
+        stateManager.update(appendInfo);
+        stateManager.updateMapEndOffset(batch.nextLogOffset());
+    }
+
+    private static LogRecordBatch batchV3(
+            long writerId,
+            short writerEpoch,
+            int baseSequence,
+            int recordCount,
+            long baseOffset,
+            boolean perRecordSequence)
+            throws Exception {
+        return DataTestUtils.genMemoryLogRecordsV3(
+                        DATA1.subList(0, recordCount),
+                        writerId,
+                        writerEpoch,
+                        baseSequence,
+                        perRecordSequence,
+                        baseOffset)
+                .batches()
+                .iterator()
+                .next();
     }
 
     private void append(

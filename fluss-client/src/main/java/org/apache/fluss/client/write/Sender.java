@@ -214,6 +214,9 @@ public class Sender implements Runnable {
             return;
         }
         if (idempotenceManager.idempotenceEnabled()) {
+            // bump the writer epoch first if a batch reported a gap, so the renumbered batches
+            // are drained below.
+            idempotenceManager.maybeBumpWriterEpoch();
             // may be wait for writer id.
             Set<PhysicalTablePath> targetTables = accumulator.getPhysicalTablePathsInBatches();
             // TODO: only request to init writer_id when we have valid target tables

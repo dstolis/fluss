@@ -29,14 +29,18 @@ import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.metrics.TestingClientMetricGroup;
+import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.server.coordinator.TestCoordinatorGateway;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
+
+import javax.annotation.Nullable;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -53,6 +57,9 @@ public class TestingMetadataUpdater extends MetadataUpdater {
 
     private final TestCoordinatorGateway coordinatorGateway;
     private final Map<Integer, TestTabletServerGateway> tabletServerGatewayMap;
+
+    /** The PRODUCE_LOG version every tablet server negotiates, if any. */
+    @Nullable private volatile Short negotiatedProduceLogVersion;
 
     public TestingMetadataUpdater(Map<TablePath, TableInfo> tableInfos) {
         this(
@@ -85,6 +92,20 @@ public class TestingMetadataUpdater extends MetadataUpdater {
                         new TestTabletServerGateway(false, Collections.emptySet()));
             }
         }
+    }
+
+    /** Lets every tablet server negotiate the given PRODUCE_LOG version, or none if null. */
+    public void setNegotiatedProduceLogVersion(@Nullable Short version) {
+        this.negotiatedProduceLogVersion = version;
+    }
+
+    @Override
+    public Optional<Short> negotiatedApiVersion(ServerNode serverNode, ApiKeys apiKey) {
+        Short version = negotiatedProduceLogVersion;
+        if (apiKey == ApiKeys.PRODUCE_LOG && version != null) {
+            return Optional.of(version);
+        }
+        return Optional.empty();
     }
 
     public void updateTableInfos(Map<TablePath, TableInfo> tableInfos) {

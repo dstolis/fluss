@@ -69,7 +69,12 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocatorUtil.createBufferAllocator;
 import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
@@ -611,6 +616,9 @@ public final class RecordAccumulator {
                                                 entry.getKey()),
                                         batch));
                         batch.resetWriterState(NO_WRITER_ID, NO_BATCH_SEQUENCE);
+                        if (batch.hasWriterEpoch()) {
+                            batch.setWriterEpoch(NO_WRITER_EPOCH);
+                        }
                     }
                     batch.rerouteToHistoricalPartition();
                 }
@@ -1109,6 +1117,9 @@ public final class RecordAccumulator {
             boolean isHistoricalPartition) {
         // If the table is kv table we need to create a kv batch, otherwise we create a log batch.
         int writeLimit = outputView.getPreAllocatedSize();
+        // Log batches of idempotent writers are written in magic V3 once the cluster accepts it,
+        // so they carry the writer epoch. KV batches have their own format without an epoch.
+        boolean writeV3 = writeFormat.isLog() && idempotenceManager.writeRecordBatchV3();
         switch (writeFormat) {
             case COMPACTED_KV:
             case INDEXED_KV:
@@ -1150,7 +1161,12 @@ public final class RecordAccumulator {
                         outputView,
                         isHistoricalPartition,
                         clock.milliseconds(),
-                        statisticsCollector);
+                        statisticsCollector,
+                        writeV3
+                                ? LOG_MAGIC_VALUE_V3
+                                : statisticsCollector != null
+                                        ? LOG_MAGIC_VALUE_V1
+                                        : LOG_MAGIC_VALUE_V0);
 
             case COMPACTED_LOG:
                 return new CompactedLogWriteBatch(
@@ -1162,7 +1178,8 @@ public final class RecordAccumulator {
                         writeLimit,
                         outputView,
                         isHistoricalPartition,
-                        clock.milliseconds());
+                        clock.milliseconds(),
+                        writeV3 ? LOG_MAGIC_VALUE_V3 : CURRENT_LOG_MAGIC_VALUE);
 
             case INDEXED_LOG:
                 return new IndexedLogWriteBatch(
@@ -1174,7 +1191,8 @@ public final class RecordAccumulator {
                         writeLimit,
                         outputView,
                         isHistoricalPartition,
-                        clock.milliseconds());
+                        clock.milliseconds(),
+                        writeV3 ? LOG_MAGIC_VALUE_V3 : CURRENT_LOG_MAGIC_VALUE);
 
             default:
                 throw new UnsupportedOperationException("Unsupported write format: " + writeFormat);
@@ -1281,7 +1299,7 @@ public final class RecordAccumulator {
                         // all
                         // its in-flight batches have completed. This is guarantee in
                         // `shouldSkipBucket`.
-                        idempotenceManager.maybeUpdateWriterId(tableBucket);
+                        idempotenceManager.maybeUpdateWriterState(tableBucket, batch);
 
                         // If the batch already has an assigned batch sequence, then we should not
                         // change writer id and batch sequence, since this may introduce
@@ -1296,6 +1314,9 @@ public final class RecordAccumulator {
                         // responses.
                         batch.setWriterState(
                                 writerId, idempotenceManager.nextSequence(tableBucket));
+                        if (batch.hasWriterEpoch()) {
+                            batch.setWriterEpoch(idempotenceManager.writerEpoch(tableBucket));
+                        }
                         idempotenceManager.incrementBatchSequence(tableBucket);
                         LOG.debug(
                                 "Assigner writerId {} to batch with batch sequence {} being sent to table bucket {}",
@@ -1356,6 +1377,20 @@ public final class RecordAccumulator {
         if (idempotenceManager.idempotenceEnabled()) {
             if (!idempotenceManager.isWriterIdValid()) {
                 // we cannot send the batch until we have refreshed writer id.
+                return true;
+            }
+
+            if (idempotenceManager.isWaitingForEpochBump(tableBucket)) {
+                // The bucket's in-flight batches are about to be renumbered under a new epoch,
+                // so don't send any of them with their old sequence.
+                return true;
+            }
+
+            if (!first.hasBatchSequence()
+                    && idempotenceManager.hasInflightBatches(tableBucket)
+                    && idempotenceManager.hasStaleWriterState(tableBucket, first)) {
+                // The writer epoch was bumped. The bucket moves to the new epoch, restarting at
+                // sequence 0, only once its batches of the older epoch have completed.
                 return true;
             }
 

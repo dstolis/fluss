@@ -44,6 +44,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -188,6 +189,12 @@ public final class NettyClient implements RpcClient {
     }
 
     /** Send an RPC request to the given server and return a future for the response. */
+    @Override
+    public Optional<Short> negotiatedApiVersion(ServerNode node, ApiKeys apiKey) {
+        ServerConnection connection = connections.get(ConnectionKey.from(node));
+        return connection == null ? Optional.empty() : connection.negotiatedApiVersion(apiKey);
+    }
+
     @Override
     public CompletableFuture<ApiMessage> sendRequest(
             ServerNode node, ApiKeys apiKey, ApiMessage request) {
