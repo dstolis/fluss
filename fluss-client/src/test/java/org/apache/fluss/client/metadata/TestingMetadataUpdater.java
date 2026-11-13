@@ -42,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /** Testing class for metadata updater. */
@@ -60,6 +61,10 @@ public class TestingMetadataUpdater extends MetadataUpdater {
 
     /** The PRODUCE_LOG version every tablet server negotiates, if any. */
     @Nullable private volatile Short negotiatedProduceLogVersion;
+
+    /** The PRODUCE_LOG versions of the tablet servers that negotiated their own version. */
+    private final Map<Integer, Short> negotiatedProduceLogVersionByServer =
+            new ConcurrentHashMap<>();
 
     public TestingMetadataUpdater(Map<TablePath, TableInfo> tableInfos) {
         this(
@@ -99,13 +104,22 @@ public class TestingMetadataUpdater extends MetadataUpdater {
         this.negotiatedProduceLogVersion = version;
     }
 
+    /**
+     * Lets the given tablet server negotiate the given PRODUCE_LOG version, whatever the other
+     * tablet servers negotiate. Versions are negotiated per connection, so a writer can hold
+     * connections of different versions, for example after it reconnected to one server.
+     */
+    public void setNegotiatedProduceLogVersion(int serverId, short version) {
+        negotiatedProduceLogVersionByServer.put(serverId, version);
+    }
+
     @Override
     public Optional<Short> negotiatedApiVersion(ServerNode serverNode, ApiKeys apiKey) {
-        Short version = negotiatedProduceLogVersion;
-        if (apiKey == ApiKeys.PRODUCE_LOG && version != null) {
-            return Optional.of(version);
+        if (apiKey != ApiKeys.PRODUCE_LOG) {
+            return Optional.empty();
         }
-        return Optional.empty();
+        Short version = negotiatedProduceLogVersionByServer.get(serverNode.id());
+        return Optional.ofNullable(version != null ? version : negotiatedProduceLogVersion);
     }
 
     public void updateTableInfos(Map<TablePath, TableInfo> tableInfos) {

@@ -35,7 +35,9 @@ import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.messages.ApiMessage;
 import org.apache.fluss.rpc.messages.ProduceLogRequest;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
+import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
+import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
 import org.apache.fluss.server.entity.ProduceLogDataForBucket;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
 import org.apache.fluss.utils.ExponentialBackoff;
@@ -58,6 +60,7 @@ import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH_PK;
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeProduceLogResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toProduceLogDataForBuckets;
 import static org.apache.fluss.testutils.DataTestUtils.row;
@@ -74,6 +77,7 @@ final class SenderWriterEpochTest {
     private static final int MAX_INFLIGHT_REQUEST_PER_BUCKET = 5;
 
     private final TableBucket tb1 = new TableBucket(DATA1_TABLE_ID, 0);
+    private final TableBucket tb2 = new TableBucket(DATA1_TABLE_ID, 1);
     private TestingMetadataUpdater metadataUpdater;
     private RecordAccumulator accumulator;
     private TestingBucketAssigner bucketAssigner;
@@ -284,6 +288,52 @@ final class SenderWriterEpochTest {
                 1, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
         assertThat(future1.get()).isInstanceOf(OutOfOrderSequenceException.class);
         assertThat(idempotenceManager.isWriterIdValid()).isFalse();
+    }
+
+    /**
+     * API versions are negotiated per connection. Once V3 writes are enabled, a writer that
+     * reconnects to one tablet server negotiates the {@code PRODUCE_LOG} version that carries V3
+     * with that server only, while its older connections to the other servers still carry the
+     * formats before V3. Every batch must have a format the connection to its leader carries,
+     * otherwise the leader rejects it.
+     */
+    @Test
+    void testBatchFormatIsCarriedByProduceLogVersionOfItsLeader() throws Exception {
+        // the writer only reconnected to the leader of bucket 0 after V3 writes were enabled
+        metadataUpdater.setNegotiatedProduceLogVersion((short) 1);
+        metadataUpdater.setNegotiatedProduceLogVersion(
+                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb1), (short) 2);
+        IdempotenceManager idempotenceManager = createIdempotenceManager(true);
+        Sender sender1 = setupWithIdempotenceState(idempotenceManager);
+        sender1.runOnce();
+
+        appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> {});
+        appendToAccumulator(tb2, row(2, "b"), (tb, leo, e) -> {});
+        sender1.runOnce();
+
+        assertBatchFormatCarriedByLeader(tb1);
+        assertBatchFormatCarriedByLeader(tb2);
+    }
+
+    private void assertBatchFormatCarriedByLeader(TableBucket tb) {
+        int leader = metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb);
+        short produceLogVersion =
+                metadataUpdater
+                        .negotiatedApiVersion(
+                                metadataUpdater.getCluster().getTabletServer(leader),
+                                ApiKeys.PRODUCE_LOG)
+                        .get();
+        LogRecordBatch batch =
+                getProduceLogRecords((ProduceLogRequest) getRequest(tb, 0), tb)
+                        .batchIterator()
+                        .next();
+        assertThat((int) batch.magic())
+                .as(
+                        "magic of the batch sent to the leader of %s with PRODUCE_LOG v%s",
+                        tb, produceLogVersion)
+                .isLessThanOrEqualTo(
+                        ApiFeatureContracts.maxLevel(
+                                ApiKeys.PRODUCE_LOG, produceLogVersion, LOG_RECORD_BATCH_VERSION));
     }
 
     private static void assertWriterEpochEquals(
