@@ -560,6 +560,32 @@ public class WriterStateManagerTest {
     }
 
     @Test
+    void testOlderEpochBatchOnFollowerKeepsSequenceOfCurrentEpoch() throws Exception {
+        // the writer is at epoch 1, sequences 0 to 2
+        appendV3(writerId, (short) 1, 0, 1, 0L, false);
+        appendV3(writerId, (short) 1, 1, 1, 1L, false);
+        appendV3(writerId, (short) 1, 2, 1, 2L, false);
+
+        // a follower keeps a batch of the older epoch 0, whose sequence 7 belongs to that epoch
+        LogRecordBatch olderEpochBatch = batchV3(writerId, (short) 0, 7, 1, 3L, false);
+        WriterAppendInfo followerAppend = stateManager.prepareUpdate(writerId);
+        followerAppend.append(olderEpochBatch, false, false);
+        stateManager.update(followerAppend);
+        stateManager.updateMapEndOffset(olderEpochBatch.nextLogOffset());
+
+        // the sequence of the current epoch is still 2
+        WriterStateEntry entry = stateManager.lastEntry(writerId).get();
+        assertThat(entry.writerEpoch()).isEqualTo((short) 1);
+        assertThat(entry.lastBatchSequence()).isEqualTo(2);
+
+        // so once this replica leads, it rejects a gap and accepts the writer's next batch
+        assertThatThrownBy(() -> appendV3(writerId, (short) 1, 8, 1, 4L, false))
+                .isInstanceOf(OutOfOrderSequenceException.class);
+        appendV3(writerId, (short) 1, 3, 1, 4L, false);
+        assertThat(stateManager.lastEntry(writerId).get().lastBatchSequence()).isEqualTo(3);
+    }
+
+    @Test
     void testWriterEpochSurvivesSnapshotReload() throws Exception {
         appendV3(writerId, (short) 3, 0, 4, 0L, true);
         stateManager.takeSnapshot();

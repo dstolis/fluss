@@ -74,15 +74,17 @@ public class WriterAppendInfo {
                         batch.lastLogOffset(),
                         isAppendAsLeader,
                         sequenceValidation);
-        // a batch of an older epoch that the leader accepted cannot follow the current sequence
-        if (!fromOlderEpoch) {
-            maybeValidateDataBatch(
-                    batch.batchSequence(),
-                    isWriterInBatchExpired,
-                    batch.lastLogOffset(),
-                    isAppendAsLeader,
-                    sequenceValidation);
+        if (fromOlderEpoch) {
+            // A batch of an older epoch that the leader accepted says nothing about the sequence
+            // of the current epoch, so it is neither validated against it nor recorded in it.
+            return;
         }
+        maybeValidateDataBatch(
+                batch.batchSequence(),
+                isWriterInBatchExpired,
+                batch.lastLogOffset(),
+                isAppendAsLeader,
+                sequenceValidation);
         updatedEntry.addBath(
                 batch.batchSequence(),
                 batch.lastSequence(),
