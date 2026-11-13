@@ -58,7 +58,6 @@ import org.apache.fluss.record.FileLogRecords;
 import org.apache.fluss.record.KeyRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
 import org.apache.fluss.record.LogRecordBatchConverter;
-import org.apache.fluss.record.LogRecordBatchFormat;
 import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.record.ProjectionPushdownCache;
@@ -112,6 +111,7 @@ import org.apache.fluss.server.log.LogReadInfo;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.log.checkpoint.OffsetCheckpointFile;
 import org.apache.fluss.server.log.remote.RemoteLogManager;
+import org.apache.fluss.server.log.remote.RemoteLogSegmentReadUtils;
 import org.apache.fluss.server.metadata.ClusterMetadata;
 import org.apache.fluss.server.metadata.TableMetadata;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
@@ -149,13 +149,9 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
-import java.io.ByteArrayOutputStream;
-import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -2090,11 +2086,16 @@ public class ReplicaManager implements ServerReconfigurable {
         FsPath remoteLogDir = FlussPaths.remoteLogDir(replica.getRemoteDataDir());
         try (InputStream in =
                 remoteLogManager.getRemoteLogStorage().fetchLogData(remoteLogDir, segment)) {
+            long fetchOffset =
+                    fetchParams.fetchOffset() == FetchParams.FETCH_FROM_EARLIEST_OFFSET
+                            ? replica.getLogStartOffset()
+                            : fetchParams.fetchOffset();
             byte[] bytes =
-                    readBatches(
+                    RemoteLogSegmentReadUtils.readBatches(
                             in,
                             remoteInfo.firstStartPos(),
                             segment.segmentSizeInBytes(),
+                            fetchOffset,
                             Math.max(1, maxBytes));
             LogRecords records = projectIfNeeded(bytes, fetchParams.projection(), maxBytes);
             return FetchLogResultForBucket.records(
@@ -2127,65 +2128,6 @@ public class ReplicaManager implements ServerReconfigurable {
             readable.add(segment);
         }
         return readable;
-    }
-
-    /**
-     * Reads whole batches from the given position of a segment stream, until adding the next one
-     * would exceed {@code maxBytes} or the segment ends. The first batch is always read.
-     */
-    private static byte[] readBatches(
-            InputStream in, int startPosition, int segmentSize, int maxBytes) throws IOException {
-        skipFully(in, startPosition);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] overhead = new byte[LogRecordBatchFormat.LOG_OVERHEAD];
-        int position = startPosition;
-        while (position + overhead.length <= segmentSize) {
-            if (!readFully(in, overhead)) {
-                break;
-            }
-            int length =
-                    ByteBuffer.wrap(overhead)
-                            .order(ByteOrder.LITTLE_ENDIAN)
-                            .getInt(LogRecordBatchFormat.LENGTH_OFFSET);
-            int batchSize = overhead.length + length;
-            if (out.size() > 0 && out.size() + batchSize > maxBytes) {
-                break;
-            }
-            byte[] rest = new byte[length];
-            if (!readFully(in, rest)) {
-                break;
-            }
-            out.write(overhead, 0, overhead.length);
-            out.write(rest, 0, rest.length);
-            position += batchSize;
-        }
-        return out.toByteArray();
-    }
-
-    private static void skipFully(InputStream in, long bytes) throws IOException {
-        long remaining = bytes;
-        while (remaining > 0) {
-            long skipped = in.skip(remaining);
-            if (skipped <= 0) {
-                if (in.read() < 0) {
-                    throw new EOFException("Reached the end of the segment while skipping.");
-                }
-                skipped = 1;
-            }
-            remaining -= skipped;
-        }
-    }
-
-    private static boolean readFully(InputStream in, byte[] buffer) throws IOException {
-        int read = 0;
-        while (read < buffer.length) {
-            int n = in.read(buffer, read, buffer.length - read);
-            if (n < 0) {
-                return false;
-            }
-            read += n;
-        }
-        return true;
     }
 
     /** Applies the fetch's column projection, which needs the batches in a file. */
