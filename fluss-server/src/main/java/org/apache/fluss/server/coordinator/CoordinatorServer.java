@@ -33,6 +33,7 @@ import org.apache.fluss.server.DynamicConfigManager;
 import org.apache.fluss.server.ServerBase;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.authorizer.AuthorizerLoader;
+import org.apache.fluss.server.coordinator.event.ClusterFeaturesChangedEvent;
 import org.apache.fluss.server.coordinator.lease.KvSnapshotLeaseManager;
 import org.apache.fluss.server.coordinator.rebalance.RebalanceManager;
 import org.apache.fluss.server.coordinator.remote.RemoteDirDynamicLoader;
@@ -133,6 +134,9 @@ public class CoordinatorServer extends ServerBase {
 
     @GuardedBy("lock")
     private CoordinatorEventProcessor coordinatorEventProcessor;
+
+    // checks cluster feature level changes and reports applied changes to the event processor
+    private ClusterFeatureLevelValidator clusterFeatureLevelValidator;
 
     @GuardedBy("lock")
     private ZooKeeperClient zkClient;
@@ -312,7 +316,8 @@ public class CoordinatorServer extends ServerBase {
             // Register stateless validators for coordinator-side upfront validation
             dynamicConfigManager.register(new HistoricalLookupCacheConfigValidator());
             dynamicConfigManager.register(new DiskWriteLimitConfigValidator());
-            dynamicConfigManager.register(new ClusterFeatureLevelValidator(zkClient, conf));
+            this.clusterFeatureLevelValidator = new ClusterFeatureLevelValidator(zkClient, conf);
+            dynamicConfigManager.register(clusterFeatureLevelValidator);
             rpcServer.getServerReconfigurables().forEach(dynamicConfigManager::register);
             dynamicConfigManager.startup();
 
@@ -373,6 +378,13 @@ public class CoordinatorServer extends ServerBase {
                             clock);
             dynamicConfigManager.registerAndApplyCurrentConfig(
                     coordinatorEventProcessor.getRebalanceManager());
+            // re-check the live tablet servers whenever a cluster feature level changes
+            CoordinatorEventProcessor eventProcessor = coordinatorEventProcessor;
+            clusterFeatureLevelValidator.setLevelChangeListener(
+                    levels ->
+                            eventProcessor
+                                    .getCoordinatorEventManager()
+                                    .put(new ClusterFeaturesChangedEvent(levels)));
             coordinatorEventProcessor.startup();
 
             // As the active leader, this server is the sole writer of dynamic configs and holds the

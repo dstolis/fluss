@@ -71,6 +71,7 @@ import org.apache.fluss.server.coordinator.event.AddServerTagEvent;
 import org.apache.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
 import org.apache.fluss.server.coordinator.event.CancelRebalanceEvent;
 import org.apache.fluss.server.coordinator.event.CheckRebalanceTimeoutEvent;
+import org.apache.fluss.server.coordinator.event.ClusterFeaturesChangedEvent;
 import org.apache.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
@@ -189,6 +190,10 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
     private final ZooKeeperClient zooKeeperClient;
     // the static config, which the cluster configs in ZooKeeper override
     private final Configuration conf;
+
+    // the newest feature levels this coordinator applied, which can be ahead of ZooKeeper because
+    // a level change is applied before it is saved
+    private ClusterFeatureLevels appliedFeatureLevels = ClusterFeatureLevels.baseline();
     private final ExecutorService ioExecutor;
     private final CoordinatorContext coordinatorContext;
     private final ReplicaCapacityController replicaCapacityController;
@@ -763,6 +768,8 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
             processNewTabletServer((NewTabletServerEvent) event);
         } else if (event instanceof DeadTabletServerEvent) {
             processDeadTabletServer((DeadTabletServerEvent) event);
+        } else if (event instanceof ClusterFeaturesChangedEvent) {
+            processClusterFeaturesChanged((ClusterFeaturesChangedEvent) event);
         } else if (event instanceof AdjustIsrReceivedEvent) {
             AdjustIsrReceivedEvent adjustIsrReceivedEvent = (AdjustIsrReceivedEvent) event;
             CompletableFuture<AdjustIsrResponse> callback =
@@ -1506,9 +1513,36 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
 
     private ClusterFeatureLevels finalizedFeatures() {
         try {
-            return ClusterFeatures.finalizedLevels(conf, zooKeeperClient);
+            return ClusterFeatures.finalizedLevels(conf, zooKeeperClient).max(appliedFeatureLevels);
         } catch (Exception e) {
             throw new FlussRuntimeException("Failed to read the finalized cluster features.", e);
+        }
+    }
+
+    /**
+     * Removes every live tablet server that doesn't support the new levels, as if it had died. A
+     * server can register after the coordinator checked the registrations for a raise and before
+     * the raise was applied, so it is live without supporting the new level.
+     */
+    private void processClusterFeaturesChanged(ClusterFeaturesChangedEvent event) {
+        appliedFeatureLevels = appliedFeatureLevels.max(event.getLevels());
+        ClusterFeatureLevels finalized = finalizedFeatures();
+        Set<Integer> liveServers = new HashSet<>(coordinatorContext.liveTabletServerSet());
+        Map<Integer, TabletServerRegistration> registrations;
+        try {
+            registrations =
+                    zooKeeperClient.getTabletServers(
+                            liveServers.stream().mapToInt(Integer::intValue).toArray());
+        } catch (Exception e) {
+            throw new FlussRuntimeException("Failed to read the tablet server registrations.", e);
+        }
+        for (int serverId : liveServers) {
+            TabletServerRegistration registration = registrations.get(serverId);
+            if (registration != null
+                    && !supportsFinalizedFeatures(
+                            serverId, registration.getSupportedFeatures(), finalized)) {
+                processDeadTabletServer(new DeadTabletServerEvent(serverId));
+            }
         }
     }
 

@@ -26,11 +26,14 @@ import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Validates changes of the finalized level of every {@link ClusterFeature} on the coordinator. A
@@ -44,6 +47,7 @@ public class ClusterFeatureLevelValidator implements ServerReconfigurable {
 
     private final ZooKeeperClient zkClient;
     private volatile ClusterFeatureLevels finalized;
+    @Nullable private volatile Consumer<ClusterFeatureLevels> levelChangeListener;
 
     public ClusterFeatureLevelValidator(ZooKeeperClient zkClient, Configuration conf) {
         this.zkClient = zkClient;
@@ -108,9 +112,22 @@ public class ClusterFeatureLevelValidator implements ServerReconfigurable {
         }
     }
 
+    /**
+     * Sets the listener that is told about every applied change of the levels, so the coordinator
+     * can re-check its live tablet servers against the new levels.
+     */
+    public void setLevelChangeListener(Consumer<ClusterFeatureLevels> levelChangeListener) {
+        this.levelChangeListener = levelChangeListener;
+    }
+
     @Override
     public void reconfigure(Configuration newConfig) {
+        ClusterFeatureLevels previous = finalized;
         finalized = ClusterFeatureLevels.fromConfig(newConfig);
+        Consumer<ClusterFeatureLevels> listener = levelChangeListener;
+        if (listener != null && !finalized.equals(previous)) {
+            listener.accept(finalized);
+        }
     }
 
     private List<Integer> offlineTabletServersWithReplicas(

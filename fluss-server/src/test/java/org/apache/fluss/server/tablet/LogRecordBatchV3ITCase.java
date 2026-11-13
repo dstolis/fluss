@@ -17,6 +17,7 @@
 
 package org.apache.fluss.server.tablet;
 
+import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
@@ -46,7 +47,12 @@ import org.apache.fluss.server.entity.FetchReqInfo;
 import org.apache.fluss.server.log.FetchIsolation;
 import org.apache.fluss.server.log.FetchParams;
 import org.apache.fluss.server.log.LogTablet;
+import org.apache.fluss.server.metadata.TabletServerResource;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
+import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.server.zk.data.TableAssignment;
+import org.apache.fluss.server.zk.data.TabletServerRegistration;
+import org.apache.fluss.server.zk.data.ZkData;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
@@ -258,6 +264,47 @@ class LogRecordBatchV3ITCase {
         assertError(
                 produce(leader, tableId, records, (short) 0, 6),
                 Errors.INVALID_WRITER_EPOCH_EXCEPTION);
+    }
+
+    @Test
+    void testTabletServerBelowTheLevelGetsNoReplicas() throws Exception {
+        alterFeatureLevel("3");
+        ZooKeeperClient zkClient = FLUSS_CLUSTER_EXTENSION.getZooKeeperClient();
+        int oldServerId = 10;
+        // an old version registers after V3 was enabled
+        zkClient.registerTabletServer(
+                oldServerId,
+                new TabletServerRegistration(
+                        null,
+                        Endpoint.fromListenersString("FLUSS://localhost:1"),
+                        System.currentTimeMillis(),
+                        TabletServerResource.unknown(),
+                        Collections.emptyMap()));
+        try {
+            // new tables are only placed on the servers that support the level
+            long tableId =
+                    createTable(
+                            FLUSS_CLUSTER_EXTENSION,
+                            TablePath.of("fluss", "v3_placement_table"),
+                            TableDescriptor.builder()
+                                    .schema(DATA1_SCHEMA)
+                                    .distributedBy(12)
+                                    .build());
+            TableAssignment assignment = zkClient.getTableAssignment(tableId).get();
+            assertThat(assignment.getBucketAssignments().values())
+                    .allSatisfy(
+                            bucket -> assertThat(bucket.getReplicas()).doesNotContain(oldServerId));
+            // and the server is not part of the cluster metadata
+            assertThat(
+                            FLUSS_CLUSTER_EXTENSION
+                                    .getCoordinatorServer()
+                                    .getCoordinatorEventProcessor()
+                                    .getCoordinatorContext()
+                                    .liveTabletServerSet())
+                    .doesNotContain(oldServerId);
+        } finally {
+            zkClient.deletePath(ZkData.ServerIdZNode.path(oldServerId));
+        }
     }
 
     private static ProduceLogResponse produce(

@@ -60,6 +60,15 @@ public final class ClusterFeatureLevels {
         return new ClusterFeatureLevels(copy);
     }
 
+    /** Returns the higher level of every feature of this and the other levels. */
+    public ClusterFeatureLevels max(ClusterFeatureLevels other) {
+        Map<ClusterFeature, Integer> copy = new EnumMap<>(levels);
+        for (ClusterFeature feature : ClusterFeature.values()) {
+            copy.put(feature, Math.max(level(feature), other.level(feature)));
+        }
+        return new ClusterFeatureLevels(copy);
+    }
+
     /** The finalized level of the given feature. */
     public int level(ClusterFeature feature) {
         return levels.get(feature);
