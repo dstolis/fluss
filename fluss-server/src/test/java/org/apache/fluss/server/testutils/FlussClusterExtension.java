@@ -23,6 +23,7 @@ import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
+import org.apache.fluss.config.cluster.AlterConfigOpType;
 import org.apache.fluss.fs.local.LocalFileSystem;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
@@ -33,12 +34,15 @@ import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.AdminReadOnlyGateway;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.AlterClusterConfigsRequest;
 import org.apache.fluss.rpc.messages.MetadataRequest;
 import org.apache.fluss.rpc.messages.MetadataResponse;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
+import org.apache.fluss.rpc.messages.PbAlterConfig;
 import org.apache.fluss.rpc.messages.PbNotifyLeaderAndIsrReqForBucket;
 import org.apache.fluss.rpc.messages.StopReplicaRequest;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.security.acl.AccessControlEntry;
 import org.apache.fluss.security.acl.AclBinding;
 import org.apache.fluss.server.ServerBase;
@@ -692,6 +696,36 @@ public final class FlussClusterExtension
                     assertThat(leaderAndIsrOpt).isPresent();
                     List<Integer> isr = leaderAndIsrOpt.get().isr();
                     assertThat(isr.contains(replicaId)).isTrue();
+                });
+    }
+
+    /**
+     * Raises the finalized level of a cluster feature through the cluster configs, as an operator
+     * does, and waits until every tablet server has applied it.
+     */
+    public void finalizeClusterFeature(ClusterFeature feature, int level) throws Exception {
+        newCoordinatorClient()
+                .alterClusterConfigs(
+                        new AlterClusterConfigsRequest()
+                                .addAllAlterConfigs(
+                                        Collections.singletonList(
+                                                new PbAlterConfig()
+                                                        .setConfigKey(feature.configOption().key())
+                                                        .setConfigValue(String.valueOf(level))
+                                                        .setOpType(AlterConfigOpType.SET.value()))))
+                .get();
+        // tablet servers apply cluster configs asynchronously
+        retry(
+                Duration.ofMinutes(1),
+                () -> {
+                    for (TabletServer server : getTabletServers()) {
+                        assertThat(
+                                        server.getReplicaManager()
+                                                .getClusterFeatures()
+                                                .levels()
+                                                .level(feature))
+                                .isEqualTo(level);
+                    }
                 });
     }
 

@@ -1091,7 +1091,10 @@ public class ConfigOptions {
                                     + "dynamically through the cluster configs: the coordinator only "
                                     + "accepts a higher level once every registered tablet server "
                                     + "supports it, and never accepts a lower level, because batches "
-                                    + "written at a higher level cannot be read at a lower one.");
+                                    + "written at a higher level cannot be read at a lower one. It "
+                                    + "must not be set in the configuration of a server: a server "
+                                    + "refuses to start with it, because a level set on a single "
+                                    + "server would skip that check.");
 
     public static final ConfigOption<MemorySize> LOG_SEGMENT_FILE_SIZE =
             key("log.segment.file-size")

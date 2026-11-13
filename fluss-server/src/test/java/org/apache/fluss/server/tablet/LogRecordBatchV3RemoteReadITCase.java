@@ -17,11 +17,9 @@
 
 package org.apache.fluss.server.tablet;
 
-import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
-import org.apache.fluss.config.cluster.AlterConfigOpType;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
@@ -31,8 +29,6 @@ import org.apache.fluss.record.LogRecordBatchFormat;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
-import org.apache.fluss.rpc.messages.AlterClusterConfigsRequest;
-import org.apache.fluss.rpc.messages.PbAlterConfig;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.server.entity.FetchReqInfo;
 import org.apache.fluss.server.log.FetchParams;
@@ -78,7 +74,7 @@ class LogRecordBatchV3RemoteReadITCase {
 
     @Test
     void testOldReaderAdvancesThroughRemoteV3Segments() throws Exception {
-        enableV3Writes();
+        FLUSS_CLUSTER_EXTENSION.finalizeClusterFeature(ClusterFeature.LOG_RECORD_BATCH_VERSION, 3);
         long tableId =
                 createTable(
                         FLUSS_CLUSTER_EXTENSION,
@@ -182,43 +178,5 @@ class LogRecordBatchV3RemoteReadITCase {
         List<LogRecordBatch> batches = new ArrayList<>();
         bucketResult.records().batches().forEach(batches::add);
         return batches;
-    }
-
-    /** Raises the cluster to the level that allows V3 batches and reconnects to negotiate it. */
-    private static void enableV3Writes() throws Exception {
-        FLUSS_CLUSTER_EXTENSION
-                .newCoordinatorClient()
-                .alterClusterConfigs(
-                        new AlterClusterConfigsRequest()
-                                .addAllAlterConfigs(
-                                        Collections.singletonList(
-                                                new PbAlterConfig()
-                                                        .setConfigKey(
-                                                                ConfigOptions
-                                                                        .CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION
-                                                                        .key())
-                                                        .setConfigValue("3")
-                                                        .setOpType(AlterConfigOpType.SET.value()))))
-                .get();
-        // tablet servers apply cluster configs asynchronously
-        retry(
-                Duration.ofMinutes(1),
-                () ->
-                        FLUSS_CLUSTER_EXTENSION
-                                .getTabletServers()
-                                .forEach(
-                                        server ->
-                                                assertThat(
-                                                                server.getReplicaManager()
-                                                                        .getClusterFeatures()
-                                                                        .levels()
-                                                                        .level(
-                                                                                ClusterFeature
-                                                                                        .LOG_RECORD_BATCH_VERSION))
-                                                        .isEqualTo(3)));
-        // versions are negotiated once per connection
-        for (ServerNode node : FLUSS_CLUSTER_EXTENSION.getTabletServerNodes()) {
-            FLUSS_CLUSTER_EXTENSION.getRpcClient().disconnect(node).get();
-        }
     }
 }

@@ -88,6 +88,31 @@ public final class ClusterFeatures {
     }
 
     /**
+     * Fails if the configuration of this server sets the finalized level of a cluster feature. A
+     * level is finalized for the whole cluster through the cluster configs, where the coordinator
+     * checks that every tablet server supports it. A level in the configuration of one server skips
+     * that check: the server would allow data that other servers of the cluster cannot read.
+     */
+    public static void checkNotInServerConfig(Configuration staticConf) {
+        List<String> keys = new ArrayList<>();
+        for (String key : staticConf.keySet()) {
+            if (key.startsWith(ClusterFeature.CONFIG_PREFIX)) {
+                keys.add(key);
+            }
+        }
+        if (!keys.isEmpty()) {
+            Collections.sort(keys);
+            throw new IllegalConfigurationException(
+                    String.format(
+                            "The cluster feature levels %s must not be set in the server "
+                                    + "configuration. Remove them, and raise a level for the whole "
+                                    + "cluster through the cluster configs instead, which checks "
+                                    + "that every tablet server supports it.",
+                            keys));
+        }
+    }
+
+    /**
      * Fails if the cluster has finalized a feature level this server does not support, for example
      * when a server of an older version starts after the cluster enabled a newer log record batch
      * format. The server could not read the data written at that level, so it must not start and

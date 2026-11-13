@@ -17,12 +17,12 @@
 
 package org.apache.fluss.client.write;
 
-import org.apache.fluss.config.ConfigOptions;
-import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.server.log.WriterStateEntry;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -44,13 +44,13 @@ class WriterEpochITCase extends WriterStateExpirationITCaseBase {
     static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
             FlussClusterExtension.builder()
                     .setNumOfTabletServers(3)
-                    .setClusterConf(v3Conf())
+                    .setClusterConf(clusterConf())
                     .build();
 
-    private static Configuration v3Conf() {
-        Configuration conf = clusterConf();
-        conf.set(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION, 3);
-        return conf;
+    @BeforeAll
+    static void enableV3Writes() throws Exception {
+        // before the writer of the test connects, so it is told to write V3 when it connects
+        FLUSS_CLUSTER_EXTENSION.finalizeClusterFeature(ClusterFeature.LOG_RECORD_BATCH_VERSION, 3);
     }
 
     @Override

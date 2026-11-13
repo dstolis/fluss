@@ -19,18 +19,22 @@ package org.apache.fluss.server.coordinator;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.FlussException;
+import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.server.ServerBase;
 import org.apache.fluss.server.ServerTestBase;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.Optional;
 
 import static org.apache.fluss.testutils.common.CommonTestUtils.waitUntil;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link CoordinatorServer} . */
 class CoordinatorServerTest extends ServerTestBase {
@@ -64,6 +68,24 @@ class CoordinatorServerTest extends ServerTestBase {
         // failure in startZookeeperClient() during start().
         configuration.setString(ConfigOptions.ZOOKEEPER_ADDRESS, "");
         return new CoordinatorServer(configuration);
+    }
+
+    @Test
+    void testRefusesToStartWithClusterFeatureLevelInItsConfiguration() throws Exception {
+        Configuration configuration = createConfiguration();
+        configuration.set(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION, 3);
+        CoordinatorServer server = new CoordinatorServer(configuration);
+        try {
+            assertThatThrownBy(server::start)
+                    .isInstanceOf(FlussException.class)
+                    .rootCause()
+                    .isInstanceOf(IllegalConfigurationException.class)
+                    .hasMessageContaining(
+                            "[cluster.feature.log.record-batch.version] must not be set in the "
+                                    + "server configuration");
+        } finally {
+            server.close();
+        }
     }
 
     @Override

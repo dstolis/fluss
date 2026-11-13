@@ -30,6 +30,7 @@ import org.apache.fluss.plugin.PluginUtils;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.coordinator.CoordinatorServer;
 import org.apache.fluss.server.exception.FlussParseException;
+import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.tablet.TabletServer;
 import org.apache.fluss.server.utils.ConfigurationParserUtils;
 import org.apache.fluss.server.utils.FatalErrorHandler;
@@ -136,6 +137,9 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
         SignalHandler.register(LOG);
         try {
             addShutDownHook();
+
+            // before anything is loaded or served under a level the cluster did not finalize
+            ClusterFeatures.checkNotInServerConfig(conf);
 
             // at first, we need to initialize the file system
             pluginManager = PluginUtils.createPluginManagerFromRootFolder(conf);

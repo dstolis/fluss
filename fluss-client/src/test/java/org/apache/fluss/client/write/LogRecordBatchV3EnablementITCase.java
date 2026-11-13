@@ -25,8 +25,6 @@ import org.apache.fluss.client.table.writer.AppendResult;
 import org.apache.fluss.client.table.writer.AppendWriter;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.config.cluster.AlterConfig;
-import org.apache.fluss.config.cluster.AlterConfigOpType;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
@@ -39,7 +37,6 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -47,7 +44,6 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.record.TestData.DATA1_SCHEMA;
 import static org.apache.fluss.testutils.DataTestUtils.row;
-import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -105,7 +101,8 @@ class LogRecordBatchV3EnablementITCase {
                             .isPositive();
                 }
 
-                enableV3Writes(admin);
+                FLUSS_CLUSTER_EXTENSION.finalizeClusterFeature(
+                        ClusterFeature.LOG_RECORD_BATCH_VERSION, 3);
                 writeToAllBuckets(writer, 1);
 
                 // The writer reconnects to the restarted leader and keeps its connections to the
@@ -135,32 +132,5 @@ class LogRecordBatchV3EnablementITCase {
                     .as("a write of round %s", round)
                     .succeedsWithin(Duration.ofMinutes(1));
         }
-    }
-
-    private static void enableV3Writes(Admin admin) throws Exception {
-        admin.alterClusterConfigs(
-                        Collections.singletonList(
-                                new AlterConfig(
-                                        ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION
-                                                .key(),
-                                        "3",
-                                        AlterConfigOpType.SET)))
-                .get();
-        // tablet servers apply cluster configs asynchronously
-        retry(
-                Duration.ofMinutes(1),
-                () ->
-                        FLUSS_CLUSTER_EXTENSION
-                                .getTabletServers()
-                                .forEach(
-                                        server ->
-                                                assertThat(
-                                                                server.getReplicaManager()
-                                                                        .getClusterFeatures()
-                                                                        .levels()
-                                                                        .level(
-                                                                                ClusterFeature
-                                                                                        .LOG_RECORD_BATCH_VERSION))
-                                                        .isEqualTo(3)));
     }
 }

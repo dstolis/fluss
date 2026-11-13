@@ -98,6 +98,24 @@ class ClusterFeaturesTest {
     }
 
     @Test
+    void testFeatureLevelMustNotBeInServerConfig() {
+        Configuration conf = new Configuration();
+        conf.set(ConfigOptions.DEFAULT_REPLICATION_FACTOR, 3);
+        assertThatCode(() -> ClusterFeatures.checkNotInServerConfig(conf))
+                .doesNotThrowAnyException();
+
+        // any level, also the baseline, and also a feature this version does not know
+        conf.set(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION, 2);
+        conf.setString("cluster.feature.added-by-a-later-version", "1");
+        assertThatThrownBy(() -> ClusterFeatures.checkNotInServerConfig(conf))
+                .isInstanceOf(IllegalConfigurationException.class)
+                .hasMessageContaining(
+                        "[cluster.feature.added-by-a-later-version, "
+                                + "cluster.feature.log.record-batch.version] must not be set in "
+                                + "the server configuration");
+    }
+
+    @Test
     void testUnsupportedFeatures() {
         assertThat(
                         ClusterFeatures.unsupportedFeatures(

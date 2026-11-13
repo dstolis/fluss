@@ -19,18 +19,22 @@ package org.apache.fluss.server.tablet;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.FlussException;
+import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.server.ServerBase;
 import org.apache.fluss.server.ServerTestBase;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link TabletServer}. */
 class TabletServerTest extends ServerTestBase {
@@ -67,6 +71,24 @@ class TabletServerTest extends ServerTestBase {
         // configure with a invalid port, the server should fail to start
         configuration.set(ConfigOptions.BIND_LISTENERS, "FLUSS://localhost:-12");
         return new TabletServer(configuration);
+    }
+
+    @Test
+    void testRefusesToStartWithClusterFeatureLevelInItsConfiguration() throws Exception {
+        Configuration configuration = createTabletServerConfiguration();
+        configuration.set(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION, 3);
+        TabletServer tabletServer = new TabletServer(configuration);
+        try {
+            assertThatThrownBy(tabletServer::start)
+                    .isInstanceOf(FlussException.class)
+                    .rootCause()
+                    .isInstanceOf(IllegalConfigurationException.class)
+                    .hasMessageContaining(
+                            "[cluster.feature.log.record-batch.version] must not be set in the "
+                                    + "server configuration");
+        } finally {
+            tabletServer.close();
+        }
     }
 
     private static Configuration createTabletServerConfiguration() {
