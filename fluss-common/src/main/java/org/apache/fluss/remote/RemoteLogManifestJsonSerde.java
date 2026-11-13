@@ -51,6 +51,7 @@ public class RemoteLogManifestJsonSerde
     private static final String LOGICAL_END_OFFSET_FIELD = "logical_end_offset";
     private static final String MAX_TIMESTAMP_FIELD = "max_timestamp";
     private static final String SEGMENT_SIZE_IN_BYTES_FIELD = "size_in_bytes";
+    private static final String MAX_BATCH_MAGIC_FIELD = "max_batch_magic";
     private static final String HIGHEST_COPIED_END_OFFSET_FIELD = "highest_copied_end_offset";
     private static final int SNAPSHOT_VERSION = 1;
 
@@ -99,6 +100,9 @@ public class RemoteLogManifestJsonSerde
             generator.writeNumberField(MAX_TIMESTAMP_FIELD, remoteLogSegment.maxTimestamp());
             generator.writeNumberField(
                     SEGMENT_SIZE_IN_BYTES_FIELD, remoteLogSegment.segmentSizeInBytes());
+            if (remoteLogSegment.maxBatchMagic() != RemoteLogSegment.UNKNOWN_BATCH_MAGIC) {
+                generator.writeNumberField(MAX_BATCH_MAGIC_FIELD, remoteLogSegment.maxBatchMagic());
+            }
             generator.writeEndObject();
         }
         generator.writeEndArray();
@@ -149,6 +153,10 @@ public class RemoteLogManifestJsonSerde
             }
             if (logicalEndOffsetNode != null) {
                 segmentBuilder.logicalEndOffset(logicalEndOffsetNode.asLong());
+            }
+            JsonNode maxBatchMagicNode = entryJson.get(MAX_BATCH_MAGIC_FIELD);
+            if (maxBatchMagicNode != null) {
+                segmentBuilder.maxBatchMagic((byte) maxBatchMagicNode.asInt());
             }
             snapshotEntries.add(segmentBuilder.build());
         }

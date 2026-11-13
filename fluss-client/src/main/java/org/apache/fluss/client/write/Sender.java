@@ -581,11 +581,15 @@ public class Sender implements Runnable {
             List<ReadyWriteBatch> writeBatches) {
         Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey = toWriteBatchesByKey(writeBatches);
         long startTime = System.currentTimeMillis();
+        writeBatches.forEach(batch -> batch.writeBatch().markAwaitingResponse());
         gateway.produceLog(request)
                 .whenComplete(
                         (produceLogResponse, e) -> {
                             writerMetricGroup.setSendLatencyInMs(
                                     System.currentTimeMillis() - startTime);
+                            // without a response, the server may or may not have written them
+                            writeBatches.forEach(
+                                    batch -> batch.writeBatch().markAnswered(e == null));
                             if (e != null) {
                                 handleWriteRequestException(e, writeBatches);
                             } else {

@@ -2040,9 +2040,11 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
-     * Reads the first remote log segment of a remote fetch result on behalf of a client that cannot
-     * read every batch format in it, and returns the converted batches inline. Handing the client
-     * the remote segment would let it download batches it cannot decode.
+     * Prepares a remote fetch result for a client that cannot read every batch format. The leading
+     * segments the client can decode are handed out as usual. If the first segment holds batches
+     * the client cannot decode, the server reads it on the client's behalf and returns the
+     * converted batches inline, since handing it out would let the client download batches it
+     * cannot decode.
      *
      * <p>At most {@code maxBytes} are read from the fetch position, but at least one complete
      * batch. The client then continues fetching from the next offset as usual.
@@ -2057,7 +2059,34 @@ public class ReplicaManager implements ServerReconfigurable {
             return result;
         }
         TableBucket tb = replica.getTableBucket();
+        List<RemoteLogSegment> readable =
+                readableSegments(
+                        remoteInfo.remoteLogSegmentList(), fetchParams.readerMaxBatchMagic());
+        if (!readable.isEmpty()) {
+            // the reader can decode these segments itself, so hand them out as usual
+            LOG.debug(
+                    "Handing out {} remote log segments of {} as stored to a reader of batch magic "
+                            + "up to {}.",
+                    readable.size(),
+                    tb,
+                    fetchParams.readerMaxBatchMagic());
+            return FetchLogResultForBucket.remote(
+                    tb,
+                    new RemoteLogFetchInfo(
+                            remoteInfo.remoteLogTabletDir(),
+                            remoteInfo.partitionName(),
+                            readable,
+                            remoteInfo.firstStartPos()),
+                    result.getHighWatermark());
+        }
         RemoteLogSegment segment = remoteInfo.remoteLogSegmentList().get(0);
+        LOG.debug(
+                "Converting remote log segment {} of {} with batch magic up to {} inline for a "
+                        + "reader of batch magic up to {}.",
+                segment.remoteLogSegmentId(),
+                tb,
+                segment.maxBatchMagic(),
+                fetchParams.readerMaxBatchMagic());
         FsPath remoteLogDir = FlussPaths.remoteLogDir(replica.getRemoteDataDir());
         try (InputStream in =
                 remoteLogManager.getRemoteLogStorage().fetchLogData(remoteLogDir, segment)) {
@@ -2082,6 +2111,22 @@ public class ReplicaManager implements ServerReconfigurable {
                     e);
             return FetchLogResultForBucket.error(tb, ApiError.fromThrowable(e));
         }
+    }
+
+    /**
+     * The leading segments whose batches the reader can decode. Segments uploaded by versions that
+     * did not record their batch magic predate V3, so they only hold formats every reader knows.
+     */
+    private static List<RemoteLogSegment> readableSegments(
+            List<RemoteLogSegment> segments, byte readerMaxBatchMagic) {
+        List<RemoteLogSegment> readable = new ArrayList<>();
+        for (RemoteLogSegment segment : segments) {
+            if (segment.maxBatchMagic() > readerMaxBatchMagic) {
+                break;
+            }
+            readable.add(segment);
+        }
+        return readable;
     }
 
     /**

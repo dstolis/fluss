@@ -103,6 +103,26 @@ public class IdempotenceBucketEntry {
         return true;
     }
 
+    /** Whether a batch of this bucket was sent and its request has not been answered yet. */
+    boolean hasBatchAwaitingResponse() {
+        for (WriteBatch batch : inflightBatchesBySequence) {
+            if (batch.isAwaitingResponse()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a batch of this bucket may or may not have been written. */
+    boolean hasBatchWithUnknownOutcome() {
+        for (WriteBatch batch : inflightBatchesBySequence) {
+            if (batch.isOutcomeUnknown()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     int nextSequence() {
         return nextSequence;
     }

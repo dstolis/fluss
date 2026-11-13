@@ -23,6 +23,8 @@ import org.apache.fluss.exception.RetriableException;
 import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.record.LogRecordBatchFormat;
 import org.apache.fluss.remote.RemoteLogManifest;
 import org.apache.fluss.remote.RemoteLogSegment;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
@@ -269,6 +271,20 @@ public class LogTieringTask implements Runnable {
      * @return the end offset of the last segment successfully copied to remote, or -1 if no
      *     segments were copied.
      */
+    /**
+     * The highest magic of the batches in a segment, so readers that can't read every format know
+     * whether the remote copy is safe to hand out.
+     */
+    private static byte maxBatchMagic(LogSegment segment) {
+        byte max = LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
+        for (LogRecordBatch batch : segment.getFileLogRecords().batches()) {
+            if (batch.magic() > max) {
+                max = batch.magic();
+            }
+        }
+        return max;
+    }
+
     private long copyLogSegmentFilesToRemote(
             LogTablet log,
             List<EnrichedLogSegment> segments,
@@ -307,6 +323,7 @@ public class LogTieringTask implements Runnable {
                             .remoteLogEndOffset(segmentEndOffset)
                             .maxTimestamp(segment.maxTimestampSoFar())
                             .segmentSizeInBytes(sizeInBytes)
+                            .maxBatchMagic(maxBatchMagic(segment))
                             .build();
             try {
                 remoteLogStorage.copyLogSegmentFiles(

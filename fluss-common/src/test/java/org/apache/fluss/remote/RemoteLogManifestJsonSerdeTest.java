@@ -21,9 +21,16 @@ import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.json.JsonSerdeTestBase;
+import org.apache.fluss.utils.json.JsonSerdeUtils;
 
+import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests of {@link RemoteLogManifestJsonSerde}. */
 class RemoteLogManifestJsonSerdeTest extends JsonSerdeTestBase<RemoteLogManifest> {
@@ -110,5 +117,44 @@ class RemoteLogManifestJsonSerdeTest extends JsonSerdeTestBase<RemoteLogManifest
     @Override
     protected String[] expectedJsons() {
         return new String[] {EXPECTED_JSON1, EXPECTED_JSON2};
+    }
+
+    @Test
+    void testMaxBatchMagicRoundTrip() {
+        RemoteLogSegment segment =
+                RemoteLogSegment.Builder.builder()
+                        .physicalTablePath(TABLE_PATH1)
+                        .tableBucket(TABLE_BUCKET1)
+                        .remoteLogSegmentId(UUID.fromString("a4421366-4a1d-4c3b-a0f8-0be2e77b1368"))
+                        .remoteLogStartOffset(0)
+                        .remoteLogEndOffset(9)
+                        .maxTimestamp(1722225103853L)
+                        .segmentSizeInBytes(2850)
+                        .maxBatchMagic((byte) 3)
+                        .build();
+        byte[] json =
+                JsonSerdeUtils.writeValueAsBytes(
+                        new RemoteLogManifest(
+                                TABLE_PATH1, TABLE_BUCKET1, Collections.singletonList(segment)),
+                        RemoteLogManifestJsonSerde.INSTANCE);
+        assertThat(new String(json, StandardCharsets.UTF_8)).contains("\"max_batch_magic\":3");
+
+        RemoteLogManifest read =
+                JsonSerdeUtils.readValue(json, RemoteLogManifestJsonSerde.INSTANCE);
+        assertThat(read.getRemoteLogSegmentList().get(0).maxBatchMagic()).isEqualTo((byte) 3);
+    }
+
+    @Test
+    void testManifestWithoutMaxBatchMagic() {
+        // manifests written by versions before the field existed
+        RemoteLogManifest read =
+                JsonSerdeUtils.readValue(
+                        EXPECTED_JSON1.getBytes(StandardCharsets.UTF_8),
+                        RemoteLogManifestJsonSerde.INSTANCE);
+        assertThat(read.getRemoteLogSegmentList())
+                .allSatisfy(
+                        segment ->
+                                assertThat(segment.maxBatchMagic())
+                                        .isEqualTo(RemoteLogSegment.UNKNOWN_BATCH_MAGIC));
     }
 }

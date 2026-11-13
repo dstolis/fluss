@@ -23,6 +23,7 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
+import org.apache.fluss.exception.TimeoutException;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -178,6 +179,87 @@ final class SenderWriterEpochTest {
         assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 1);
     }
 
+    /**
+     * The epoch bump waits until every batch in flight for the bucket has been answered, since a
+     * batch still waiting for its answer may have been written.
+     */
+    @Test
+    void testEpochBumpWaitsForAllResponses() throws Exception {
+        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        IdempotenceManager idempotenceManager = createIdempotenceManager(true);
+        Sender sender1 = setupWithIdempotenceState(idempotenceManager);
+        sender1.runOnce();
+
+        CompletableFuture<Exception> future0 = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> future0.complete(e));
+        sender1.runOnce();
+        CompletableFuture<Exception> future1 = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(2, "b"), (tb, leo, e) -> future1.complete(e));
+        sender1.runOnce();
+        assertThat(pendingRequestSize(tb1)).isEqualTo(2);
+
+        // batch 0 is rejected, batch 1 is still waiting for its answer
+        finishIdempotentProduceLogRequest(
+                0, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+        sender1.runOnce();
+        assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 0);
+
+        // once batch 1 is rejected too, both are renumbered under the new epoch
+        finishIdempotentProduceLogRequest(
+                1, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+        sender1.runOnce();
+        assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 1);
+        assertWriterEpochEquals(tb1, (ProduceLogRequest) getRequest(tb1, 0), 1);
+        finishIdempotentProduceLogRequest(0, tb1, 0, createProduceLogResponse(tb1, 0L, 1L));
+        sender1.runOnce();
+        finishIdempotentProduceLogRequest(1, tb1, 0, createProduceLogResponse(tb1, 1L, 2L));
+        sender1.runOnce();
+        assertThat(future0.get()).isNull();
+        assertThat(future1.get()).isNull();
+    }
+
+    /**
+     * A batch whose request got no answer may have been written. If the server then reports a gap
+     * for it, it is not renumbered under a new epoch, which could write it twice: the batch fails
+     * and the writer id is reset, as for other unknown outcomes.
+     */
+    @Test
+    void testUnknownOutcomeResetsWriterIdInsteadOfBumpingEpoch() throws Exception {
+        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        IdempotenceManager idempotenceManager = createIdempotenceManager(true);
+        Sender sender1 = setupWithIdempotenceState(idempotenceManager);
+        sender1.runOnce();
+        long writerId = idempotenceManager.writerId();
+
+        CompletableFuture<Exception> future0 = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> future0.complete(e));
+        sender1.runOnce();
+        finishIdempotentProduceLogRequest(0, tb1, 0, createProduceLogResponse(tb1, 0L, 1L));
+        sender1.runOnce();
+        assertThat(future0.get()).isNull();
+
+        // the request of batch 1 times out, so it may or may not have been written
+        CompletableFuture<Exception> future1 = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(2, "b"), (tb, leo, e) -> future1.complete(e));
+        sender1.runOnce();
+        failRequest(tb1, 0, new TimeoutException("request timed out"));
+        sender1.runOnce();
+
+        // the retry finds the writer state expired on the server
+        assertWriterEpochEquals(tb1, (ProduceLogRequest) getRequest(tb1, 0), 0);
+        finishIdempotentProduceLogRequest(
+                1, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+        assertThat(future1.get()).isInstanceOf(OutOfOrderSequenceException.class);
+        assertThat(idempotenceManager.isWriterIdValid()).isFalse();
+        assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 0);
+
+        // the writer starts over with a new writer id at epoch 0
+        sender1.runOnce();
+        sender1.runOnce();
+        assertThat(idempotenceManager.writerId()).isNotEqualTo(writerId);
+        assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 0);
+    }
+
     /** Without V3, batches carry no epoch, so a real gap still fails the batch and resets. */
     @Test
     void testOutOfOrderSequenceResetsWriterWithoutV3() throws Exception {
@@ -226,6 +308,14 @@ final class SenderWriterEpochTest {
                         DATA1_TABLE_INFO, PhysicalTablePath.of(DATA1_TABLE_PATH), row, null),
                 writeCallback,
                 metadataUpdater.getCluster());
+    }
+
+    private void failRequest(TableBucket tb, int index, Throwable throwable) {
+        TestTabletServerGateway gateway =
+                (TestTabletServerGateway)
+                        metadataUpdater.newTabletServerClientForNode(
+                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
+        gateway.failRequest(index, throwable);
     }
 
     private ApiMessage getRequest(TableBucket tb, int index) {
