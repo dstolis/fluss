@@ -164,7 +164,7 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     }
 
     /** Whether the sequence of this batch advances once per record instead of once per batch. */
-    public boolean isPerRecordSequence() {
+    boolean isPerRecordSequence() {
         return magic >= LOG_MAGIC_VALUE_V3 && (attributes() & PER_RECORD_SEQUENCE_FLAG_MASK) != 0;
     }
 
@@ -634,7 +634,7 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
      * Increments the sequence number by the given value, wrapping around to 0 after {@link
      * Integer#MAX_VALUE}, in the same way as Kafka producers number their records.
      */
-    public static int incrementSequence(int sequence, int increment) {
+    static int incrementSequence(int sequence, int increment) {
         if (sequence > Integer.MAX_VALUE - increment) {
             return increment - (Integer.MAX_VALUE - sequence) - 1;
         }
