@@ -2157,6 +2157,7 @@ mod tests {
                             max_version: 0,
                         }],
                         server_type: Some(ServerType::TabletServer.to_type_id()),
+                        ..Default::default()
                     }
                     .encode(&mut body)
                     .expect("encode ApiVersionsResponse");
@@ -2558,6 +2559,7 @@ mod tests {
         ApiVersionsResponse {
             api_versions: vec![version(1000), version(1014), version(1016)],
             server_type: Some(ServerType::TabletServer.to_type_id()),
+            ..Default::default()
         }
     }
 
@@ -2985,6 +2987,7 @@ mod tests {
                                         },
                                     ],
                                     server_type: Some(ServerType::TabletServer.to_type_id()),
+                                    ..Default::default()
                                 }
                                 .encode(&mut body)
                                 .expect("encode ApiVersionsResponse");

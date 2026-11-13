@@ -1075,6 +1075,19 @@ public class TabletServiceITCase {
                         .get();
         // clients negotiate version 1 and keep writing the existing formats
         assertThat(produceLog.getMaxVersion()).isEqualTo((short) 1);
+        // the server reports the level it supports and the level the cluster finalized
+        assertThat(response.getSupportedFeaturesList())
+                .anySatisfy(
+                        feature -> {
+                            assertThat(feature.getName()).isEqualTo("log.record-batch.version");
+                            assertThat(feature.getLevel()).isEqualTo(3);
+                        });
+        assertThat(response.getFinalizedFeaturesList())
+                .anySatisfy(
+                        feature -> {
+                            assertThat(feature.getName()).isEqualTo("log.record-batch.version");
+                            assertThat(feature.getLevel()).isEqualTo(2);
+                        });
     }
 
     @Test

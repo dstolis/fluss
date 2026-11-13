@@ -105,6 +105,7 @@ import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.FetchLogReadPreference;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
@@ -282,14 +283,26 @@ public final class TabletService extends RpcServiceBase
      * ApiFeatureContracts}. For example, the {@code PRODUCE_LOG} version that may carry log record
      * batches of magic V3 is only advertised once the cluster allows them. Clients negotiate
      * versions once per connection, so they see the change after reconnecting.
+     *
+     * <p>The response also lists the cluster features this server supports and the finalized levels
+     * it applies, so clients and tools can see the state of the cluster.
      */
     @Override
     public CompletableFuture<ApiVersionsResponse> apiVersions(ApiVersionsRequest request) {
         return super.apiVersions(request)
                 .thenApply(
                         response -> {
+                            ClusterFeatureLevels finalized = finalizedFeatures();
                             ApiFeatureContracts.capAdvertisedVersions(
-                                    response.getApiVersionsList(), finalizedFeatures());
+                                    response.getApiVersionsList(), finalized);
+                            for (ClusterFeature feature : ClusterFeature.values()) {
+                                response.addSupportedFeature()
+                                        .setName(feature.featureName())
+                                        .setLevel(feature.latestLevel());
+                                response.addFinalizedFeature()
+                                        .setName(feature.featureName())
+                                        .setLevel(finalized.level(feature));
+                            }
                             return response;
                         });
     }

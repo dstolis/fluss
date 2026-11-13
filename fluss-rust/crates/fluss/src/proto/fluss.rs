@@ -40,6 +40,12 @@ pub struct ApiVersionsResponse {
     pub api_versions: ::prost::alloc::vec::Vec<PbApiVersion>,
     #[prost(int32, optional, tag = "2")]
     pub server_type: ::core::option::Option<i32>,
+    /// The cluster features this server supports, with the highest supported level of each.
+    #[prost(message, repeated, tag = "3")]
+    pub supported_features: ::prost::alloc::vec::Vec<PbClusterFeatureLevel>,
+    /// The cluster feature levels finalized in the cluster, as applied on this server.
+    #[prost(message, repeated, tag = "4")]
+    pub finalized_features: ::prost::alloc::vec::Vec<PbClusterFeatureLevel>,
 }
 /// get schema request and response
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1287,6 +1293,13 @@ pub struct PbApiVersion {
     pub min_version: i32,
     #[prost(int32, required, tag = "3")]
     pub max_version: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PbClusterFeatureLevel {
+    #[prost(string, required, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(int32, required, tag = "2")]
+    pub level: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PbTablePath {

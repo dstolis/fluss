@@ -3515,6 +3515,7 @@ mod tests {
                                     })
                                     .collect(),
                                 server_type: Some(ServerType::TabletServer.to_type_id()),
+                                ..Default::default()
                             };
                         reply_scanner_rpc(&mut stream, &request, versions.clone(), false).await;
                         // Token initialization may open the scanner connection first.

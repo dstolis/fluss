@@ -112,6 +112,12 @@ class LogRecordBatchV3ITCase {
                                 assertThat(version.getApiKey()).isEqualTo(ApiKeys.PRODUCE_LOG.id);
                                 assertThat(version.getMaxVersion()).isEqualTo(2);
                             });
+            assertThat(versions.getFinalizedFeaturesList())
+                    .anySatisfy(
+                            feature -> {
+                                assertThat(feature.getName()).isEqualTo("log.record-batch.version");
+                                assertThat(feature.getLevel()).isEqualTo(3);
+                            });
         }
 
         // the level is never lowered, because batches written at level 3 must stay readable

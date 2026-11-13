@@ -156,6 +156,7 @@ impl PartitionServer {
                 })
                 .collect(),
                 server_type: None,
+                ..Default::default()
             }
             .encode_to_vec())),
             ApiKey::MetaData => {

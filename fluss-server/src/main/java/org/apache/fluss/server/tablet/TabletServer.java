@@ -234,6 +234,8 @@ public class TabletServer extends ServerBase {
             this.userMetrics = new UserMetrics(scheduler, metricRegistry, tabletServerMetricGroup);
 
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
+            // refuse to start before loading any data written at a level this server can't read
+            ClusterFeatures.checkSupportsFinalizedFeatures(conf, zkClient);
 
             this.lakeCatalogDynamicLoader =
                     new LakeCatalogDynamicLoader(conf, pluginManager, false);

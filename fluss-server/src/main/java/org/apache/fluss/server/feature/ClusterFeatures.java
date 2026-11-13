@@ -19,6 +19,7 @@ package org.apache.fluss.server.feature;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.zk.ZooKeeperClient;
@@ -84,5 +85,24 @@ public final class ClusterFeatures {
         Configuration conf = new Configuration(staticConf);
         conf.addAll(Configuration.fromMap(zkClient.fetchEntityConfig()));
         return ClusterFeatureLevels.fromConfig(conf);
+    }
+
+    /**
+     * Fails if the cluster has finalized a feature level this server does not support, for example
+     * when a server of an older version starts after the cluster enabled a newer log record batch
+     * format. The server could not read the data written at that level, so it must not start and
+     * join the cluster.
+     */
+    public static void checkSupportsFinalizedFeatures(
+            Configuration staticConf, ZooKeeperClient zkClient) throws Exception {
+        List<String> unsupported =
+                unsupportedFeatures(supportedFeatures(), finalizedLevels(staticConf, zkClient));
+        if (!unsupported.isEmpty()) {
+            throw new IllegalConfigurationException(
+                    String.format(
+                            "This tablet server does not support the finalized cluster features "
+                                    + "%s. Upgrade it to a version that supports them.",
+                            unsupported));
+        }
     }
 }
