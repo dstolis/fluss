@@ -35,9 +35,11 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.DefaultValueRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
 import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.record.LogRecordBatchConverter;
 import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
+import org.apache.fluss.rpc.entity.LimitScanResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
 import org.apache.fluss.rpc.entity.PrefixLookupResultForBucket;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
@@ -443,6 +445,12 @@ public final class TabletService extends RpcServiceBase
         CompletableFuture<FetchLogResponse> response = new CompletableFuture<>();
         FetchParams fetchParams = getFetchParams(request);
         short apiVersion = currentSession().getApiVersion();
+        // clients get the batches their version cannot read converted, replicas never do
+        int readableLevel = readableBatchLevel(ApiKeys.FETCH_LOG, apiVersion);
+        if (isFromClient(request.getFollowerServerId())
+                && finalizedFeatures().level(LOG_RECORD_BATCH_VERSION) > readableLevel) {
+            fetchParams.convertBatchesAbove((byte) readableLevel);
+        }
         replicaManager.fetchLogRecords(
                 fetchParams,
                 interesting,
@@ -497,6 +505,26 @@ public final class TabletService extends RpcServiceBase
             }
         }
         return checked;
+    }
+
+    /** The highest log record batch level the given version of a read API can return as stored. */
+    private static int readableBatchLevel(ApiKeys api, short apiVersion) {
+        return Math.min(
+                ApiFeatureContracts.maxLevel(api, apiVersion, LOG_RECORD_BATCH_VERSION),
+                Byte.MAX_VALUE);
+    }
+
+    /** Converts the log record batches of a limit scan the reader's version cannot read. */
+    private LimitScanResultForBucket convertForReader(
+            LimitScanResultForBucket result, int readableLevel) {
+        if (result.failed()
+                || result.getRecords() == null
+                || finalizedFeatures().level(LOG_RECORD_BATCH_VERSION) <= readableLevel) {
+            return result;
+        }
+        return new LimitScanResultForBucket(
+                result.getTableBucket(),
+                LogRecordBatchConverter.convert(result.getRecords(), (byte) readableLevel));
     }
 
     private static int highestBatchMagic(LogRecords records) {
@@ -713,13 +741,17 @@ public final class TabletService extends RpcServiceBase
                 request.hasRoutingBucketCount() ? request.getRoutingBucketCount() : 0);
 
         CompletableFuture<LimitScanResponse> response = new CompletableFuture<>();
+        int readableLevel =
+                readableBatchLevel(ApiKeys.LIMIT_SCAN, currentSession().getApiVersion());
         replicaManager.limitScan(
                 new TableBucket(
                         request.getTableId(),
                         request.hasPartitionId() ? request.getPartitionId() : null,
                         request.getBucketId()),
                 request.getLimit(),
-                value -> response.complete(makeLimitScanResponse(value)));
+                value ->
+                        response.complete(
+                                makeLimitScanResponse(convertForReader(value, readableLevel))));
         return response;
     }
 

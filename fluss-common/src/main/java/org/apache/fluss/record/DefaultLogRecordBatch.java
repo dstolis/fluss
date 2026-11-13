@@ -210,7 +210,7 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
         return Crc32C.compute(buffer, schemaIdOffset, sizeInBytes() - schemaIdOffset);
     }
 
-    private byte attributes() {
+    byte attributes() {
         return segment.get(attributeOffset(magic) + position);
     }
 

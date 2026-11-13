@@ -77,7 +77,8 @@ public enum ApiKeys {
     COMMIT_LAKE_TABLE_SNAPSHOT(1030, 0, 0, PRIVATE),
     NOTIFY_LAKE_TABLE_OFFSET(1031, 0, 0, PRIVATE),
     GET_LAKE_SNAPSHOT(1032, 0, 0, PUBLIC),
-    LIMIT_SCAN(1033, 0, 0, PUBLIC),
+    // Version 1: The client can read log record batches of magic V3 returned for log tables.
+    LIMIT_SCAN(1033, 0, 1, PUBLIC),
 
     // Version 0: Uses lake's encoder for prefix key encoding (legacy behavior).
     // Version 1: Uses CompactedKeyEncoder for prefix key encoding when bucket key differs from

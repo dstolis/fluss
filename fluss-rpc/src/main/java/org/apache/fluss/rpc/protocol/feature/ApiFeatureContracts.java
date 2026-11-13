@@ -72,6 +72,10 @@ public final class ApiFeatureContracts {
         define(ApiKeys.FETCH_LOG, LOG_RECORD_BATCH_VERSION, Access.READ)
                 .since((short) 0, LOG_RECORD_BATCH_VERSION.baselineLevel())
                 .since((short) 1, 3);
+        // Version 1 can read log record batches of magic V3 returned for log tables.
+        define(ApiKeys.LIMIT_SCAN, LOG_RECORD_BATCH_VERSION, Access.READ)
+                .since((short) 0, LOG_RECORD_BATCH_VERSION.baselineLevel())
+                .since((short) 1, 3);
         CONTRACTS.values().forEach(Contract::validate);
     }
 

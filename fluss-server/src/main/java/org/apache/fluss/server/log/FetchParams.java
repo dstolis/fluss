@@ -71,6 +71,9 @@ public final class FetchParams {
     private final int minFetchBytes;
     private final long maxWaitMs;
     private final FetchLogReadPreference readPreference;
+
+    // the highest batch magic the reader can read; batches above it are converted for the reader
+    private byte readerMaxBatchMagic = Byte.MAX_VALUE;
     // TODO: add more params like epoch etc.
 
     public FetchParams(int replicaId, int maxFetchBytes) {
@@ -213,6 +216,25 @@ public final class FetchParams {
 
     public int replicaId() {
         return replicaId;
+    }
+
+    /**
+     * Converts the batches this fetch returns whose magic is above the given one, for a client
+     * whose {@code FETCH_LOG} version cannot read them. Only clients get converted batches,
+     * replicas always copy the original batches.
+     */
+    public void convertBatchesAbove(byte readerMaxBatchMagic) {
+        this.readerMaxBatchMagic = readerMaxBatchMagic;
+    }
+
+    /** Whether the batches of this fetch are converted for the reader. */
+    public boolean convertsBatches() {
+        return readerMaxBatchMagic != Byte.MAX_VALUE;
+    }
+
+    /** The highest batch magic the reader can read. */
+    public byte readerMaxBatchMagic() {
+        return readerMaxBatchMagic;
     }
 
     public boolean isFromFollower() {

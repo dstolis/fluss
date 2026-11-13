@@ -59,6 +59,14 @@ class ApiFeatureContractsTest {
                         ApiFeatureContracts.maxLevel(
                                 ApiKeys.FETCH_LOG, (short) 1, LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
+        assertThat(
+                        ApiFeatureContracts.maxLevel(
+                                ApiKeys.LIMIT_SCAN, (short) 0, LOG_RECORD_BATCH_VERSION))
+                .isEqualTo(2);
+        assertThat(
+                        ApiFeatureContracts.maxLevel(
+                                ApiKeys.LIMIT_SCAN, (short) 1, LOG_RECORD_BATCH_VERSION))
+                .isEqualTo(3);
         // APIs without a contract carry no log record batches
         assertThat(
                         ApiFeatureContracts.maxLevel(
