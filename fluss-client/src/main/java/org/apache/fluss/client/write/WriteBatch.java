@@ -189,6 +189,14 @@ public abstract class WriteBatch {
         }
     }
 
+    /**
+     * Marks that the batch may have been written although the server answered with an error, for
+     * example because the leader appended it and then timed out waiting for its followers.
+     */
+    void markOutcomeUnknown() {
+        outcomeUnknown = true;
+    }
+
     /** Whether the batch was sent and its request has not been answered yet. */
     boolean isAwaitingResponse() {
         return awaitingResponse;

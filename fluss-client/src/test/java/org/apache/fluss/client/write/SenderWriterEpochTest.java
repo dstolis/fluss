@@ -46,6 +46,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -181,6 +182,56 @@ final class SenderWriterEpochTest {
     }
 
     /**
+     * Two buckets lose their writer state, and the second one reports its gap after the epoch was
+     * already bumped for the first one. Its batches are renumbered under the current epoch as well,
+     * without another bump, instead of being resent with their old sequence forever.
+     */
+    @Test
+    void testBucketReportingGapAfterEpochBumpIsRenumbered() throws Exception {
+        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        IdempotenceManager idempotenceManager = createIdempotenceManager(true);
+        Sender sender1 = setupWithIdempotenceState(idempotenceManager);
+        sender1.runOnce();
+
+        // one acknowledged batch per bucket, so the next batches have sequence 1
+        for (TableBucket bucket : Arrays.asList(tb1, tb2)) {
+            appendToAccumulator(bucket, row(1, "a"), (tb, leo, e) -> {});
+            sender1.runOnce();
+            finishIdempotentProduceLogRequest(
+                    0, bucket, 0, createProduceLogResponse(bucket, 0L, 1L));
+            sender1.runOnce();
+        }
+
+        CompletableFuture<Exception> future1 = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(2, "b"), (tb, leo, e) -> future1.complete(e));
+        CompletableFuture<Exception> future2 = new CompletableFuture<>();
+        appendToAccumulator(tb2, row(2, "b"), (tb, leo, e) -> future2.complete(e));
+        sender1.runOnce();
+
+        // bucket 0 reports its gap first, and the epoch is bumped for it
+        finishIdempotentProduceLogRequest(
+                1, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+        sender1.runOnce();
+        assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 1);
+        assertWriterEpochEquals(tb1, (ProduceLogRequest) getRequest(tb1, 0), 1);
+
+        // bucket 1 reports its gap afterwards
+        finishIdempotentProduceLogRequest(
+                1, tb2, 0, createProduceLogResponse(tb2, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+        sender1.runOnce();
+        ProduceLogRequest retried = (ProduceLogRequest) getRequest(tb2, 0);
+        assertWriterEpochEquals(tb2, retried, 1);
+        assertBatchSequenceEquals(tb2, retried, 0);
+        assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 1);
+
+        finishIdempotentProduceLogRequest(0, tb1, 0, createProduceLogResponse(tb1, 1L, 2L));
+        finishIdempotentProduceLogRequest(0, tb2, 0, createProduceLogResponse(tb2, 1L, 2L));
+        sender1.runOnce();
+        assertThat(future1.get()).isNull();
+        assertThat(future2.get()).isNull();
+    }
+
+    /**
      * The epoch bump waits until every batch in flight for the bucket has been answered, since a
      * batch still waiting for its answer may have been written.
      */
@@ -285,6 +336,42 @@ final class SenderWriterEpochTest {
                 1, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
         assertThat(future1.get()).isInstanceOf(OutOfOrderSequenceException.class);
         assertThat(idempotenceManager.isWriterIdValid()).isFalse();
+    }
+
+    /**
+     * A batch that was created before the writer switched to V3 carries no epoch. Once the cluster
+     * allows V3, a real gap for it is recovered with a new writer id, under which the batch is sent
+     * again from sequence 0.
+     */
+    @Test
+    void testGapForBatchWithoutEpochRenewsWriterIdOnceV3IsAllowed() throws Exception {
+        metadataUpdater.setNegotiatedProduceLogVersion((short) 1);
+        IdempotenceManager idempotenceManager = createIdempotenceManager(true);
+        Sender sender1 = setupWithIdempotenceState(idempotenceManager);
+        sender1.runOnce();
+        long writerId = idempotenceManager.writerId();
+
+        // the batch is created in an older format, then the cluster allows V3
+        CompletableFuture<Exception> future = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> future.complete(e));
+        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        sender1.runOnce();
+        finishIdempotentProduceLogRequest(
+                0, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+        assertThat(future).isNotDone();
+
+        sender1.runOnce();
+        long newWriterId = idempotenceManager.writerId();
+        assertThat(newWriterId).isNotEqualTo(writerId);
+        LogRecordBatch retried =
+                getProduceLogRecords((ProduceLogRequest) getRequest(tb1, 0), tb1)
+                        .batchIterator()
+                        .next();
+        assertThat(retried.magic()).isLessThan(LOG_MAGIC_VALUE_V3);
+        assertThat(retried.writerId()).isEqualTo(newWriterId);
+        finishIdempotentProduceLogRequest(0, tb1, 0, createProduceLogResponse(tb1, 0L, 1L));
+        sender1.runOnce();
+        assertThat(future.get()).isNull();
     }
 
     /**

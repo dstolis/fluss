@@ -214,13 +214,13 @@ public class Sender implements Runnable {
             return;
         }
         if (idempotenceManager.idempotenceEnabled()) {
-            // bump the writer epoch first if a batch reported a gap, so the renumbered batches
-            // are drained below.
-            idempotenceManager.maybeBumpWriterEpoch();
-            // may be wait for writer id.
             Set<PhysicalTablePath> targetTables = accumulator.getPhysicalTablePathsInBatches();
             // TODO: only request to init writer_id when we have valid target tables
             try {
+                // First restart the sequence of the buckets whose batches reported a gap, so the
+                // renumbered batches are drained below. This may request a new writer id.
+                idempotenceManager.maybeRestartSequences(targetTables);
+                // may be wait for writer id.
                 idempotenceManager.maybeWaitForWriterId(targetTables);
             } catch (Throwable t) {
                 if (t instanceof Error) {
@@ -606,11 +606,15 @@ public class Sender implements Runnable {
             List<ReadyWriteBatch> writeBatches) {
         Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey = toWriteBatchesByKey(writeBatches);
         long startTime = System.currentTimeMillis();
+        writeBatches.forEach(batch -> batch.writeBatch().markAwaitingResponse());
         gateway.putKv(request)
                 .whenComplete(
                         (putKvResponse, e) -> {
                             writerMetricGroup.setSendLatencyInMs(
                                     System.currentTimeMillis() - startTime);
+                            // without a response, the server may or may not have written them
+                            writeBatches.forEach(
+                                    batch -> batch.writeBatch().markAnswered(e == null));
                             if (e != null) {
                                 handleWriteRequestException(e, writeBatches);
                             } else {
@@ -759,6 +763,12 @@ public class Sender implements Runnable {
         // Historical queues use the original path as their accumulator key, so capture the actual
         // RPC target before any retry handling.
         PhysicalTablePath writeTargetPath = writeBatch.writeTargetPath();
+        if (error.error() == Errors.REQUEST_TIME_OUT
+                || error.error() == Errors.NOT_ENOUGH_REPLICAS_AFTER_APPEND_EXCEPTION) {
+            // The leader appended the batch before it gave up waiting for its followers, so the
+            // batch may be stored although the write was not acknowledged.
+            writeBatch.markOutcomeUnknown();
+        }
         if (error.exception() instanceof StorageBackpressureException
                 || error.exception() instanceof HistoricalPartitionThrottledException) {
             // Hard rejection: the storage engine or historical request queue rejected the
@@ -817,9 +827,10 @@ public class Sender implements Runnable {
             if (!idempotenceManager.idempotenceEnabled()) {
                 prepareWriteRetry(readyWriteBatch, error);
                 batchesToRetry.add(readyWriteBatch);
-            } else if (idempotenceManager.hasWriterId(writeBatch.writerId())) {
-                // If idempotence is enabled only retry the request if the current writer id is
-                // the same as the writer id of the batch.
+            } else if (idempotenceManager.isOnWriterIdOfBucket(
+                    readyWriteBatch.tableBucket(), writeBatch)) {
+                // If idempotence is enabled only retry the request if the writer id of the
+                // bucket is the same as the writer id of the batch.
                 LOG.debug(
                         "Retrying batch to table-bucket {}, Batch sequence : {}",
                         readyWriteBatch.tableBucket(),

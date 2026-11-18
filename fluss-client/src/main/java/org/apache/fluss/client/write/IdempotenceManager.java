@@ -41,7 +41,11 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
-import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -78,18 +82,17 @@ public class IdempotenceManager {
     private volatile long writerId;
 
     /**
-     * The current epoch of the writer. It is bumped locally, without asking the server, when the
-     * server reports a sequence gap or an unknown writer for a batch that carries a writer epoch.
+     * The current epoch of the writer. It is bumped locally, without asking the server, to restart
+     * the sequence of a bucket whose batches all carry a writer epoch.
      */
     private volatile short writerEpoch;
 
-    /** Whether the epoch must be bumped before the next batches are drained. */
+    /**
+     * The buckets whose sequence is restarted at 0 before the next batches are drained, mapped to
+     * whether every batch that requested it carries a writer epoch.
+     */
     @GuardedBy("this")
-    private boolean epochBumpRequired;
-
-    /** The buckets whose in-flight batches are renumbered from 0 under the bumped epoch. */
-    @GuardedBy("this")
-    private final Set<TableBucket> bucketsToRewriteSequences = new HashSet<>();
+    private final Map<TableBucket, Boolean> bucketsToRestart = new HashMap<>();
 
     /**
      * Whether new log record batches are written in magic V3. It turns true once a tablet server
@@ -200,94 +203,167 @@ public class IdempotenceManager {
                 || (nextBatch.hasWriterEpoch() && writerEpoch != entry.writerEpoch());
     }
 
-    /** Whether the bucket waits for an epoch bump that renumbers its in-flight batches. */
-    synchronized boolean isWaitingForEpochBump(TableBucket tableBucket) {
-        return epochBumpRequired && bucketsToRewriteSequences.contains(tableBucket);
+    /** Whether the in-flight batches of the bucket are about to be renumbered. */
+    synchronized boolean isWaitingForSequenceRestart(TableBucket tableBucket) {
+        return bucketsToRestart.containsKey(tableBucket);
     }
 
     /**
-     * Requests to bump the writer epoch, because the server reported a gap in the sequence or an
-     * unknown writer for a batch of this bucket. The bump happens before the next drain, see {@link
-     * #maybeBumpWriterEpoch()}.
-     */
-    synchronized void requestEpochBump(TableBucket tableBucket) {
-        LOG.info(
-                "Requesting a bump of epoch {} of writer {} because of table-bucket {}.",
-                writerEpoch,
-                writerId,
-                tableBucket);
-        epochBumpRequired = true;
-        bucketsToRewriteSequences.add(tableBucket);
-    }
-
-    /**
-     * Bumps the writer epoch if requested, and renumbers the in-flight batches of the buckets that
-     * requested it from sequence 0 under the new epoch. Other buckets move to the new epoch once
-     * their in-flight batches have completed, see {@link #maybeUpdateWriterState}.
+     * Requests to restart the sequence of the bucket at 0, because the server reported a gap in the
+     * sequence or an unknown writer for one of its batches, for example after it expired the writer
+     * state. The restart happens before the next drain, see {@link #maybeRestartSequences}.
      *
-     * <p>The bump waits until every request carrying a batch of such a bucket has been answered.
-     * Batches the server rejected were not written and are resent under the new epoch. A batch
-     * whose request got no answer, for example on a timeout, may have been written, so it is never
-     * renumbered: the bump is cancelled, the batch is retried as it is, and if the server reports a
-     * gap for it, the batch fails and the writer id is reset, as for other unknown outcomes. The
-     * writer id is also reset if the epoch is exhausted or an in-flight batch of such a bucket
-     * can't carry an epoch. A reset writer requests a new writer id and starts at epoch 0.
+     * @param batchCarriesEpoch whether the rejected batch carries a writer epoch
      */
-    synchronized void maybeBumpWriterEpoch() {
-        if (!epochBumpRequired) {
-            return;
+    synchronized void requestSequenceRestart(TableBucket tableBucket, boolean batchCarriesEpoch) {
+        LOG.info(
+                "Requesting to restart the sequence of table-bucket {} of writer {} with epoch {}.",
+                tableBucket,
+                writerId,
+                writerEpoch);
+        bucketsToRestart.merge(tableBucket, batchCarriesEpoch, Boolean::logicalAnd);
+    }
+
+    /**
+     * Restarts the sequence of the buckets that requested it. Their in-flight batches are
+     * renumbered from sequence 0 under an identity the server has not seen for the bucket, so it
+     * accepts them as a new sequence:
+     *
+     * <ul>
+     *   <li>A bumped epoch, if every batch of the bucket carries a writer epoch, which only log
+     *       record batches of magic V3 do. This does not ask the server.
+     *   <li>Otherwise a new writer id, for example for KV batches, which is requested from the
+     *       server.
+     * </ul>
+     *
+     * <p>Other buckets keep their sequence, and move to the new epoch or writer id once their
+     * in-flight batches have completed, see {@link #maybeUpdateWriterState}. A bucket that requests
+     * a restart after the epoch or the writer id has already moved on restarts under the current
+     * one.
+     *
+     * <p>A bucket is only restarted once every request carrying one of its batches has been
+     * answered. Batches the server rejected were not written and are resent. A batch whose request
+     * got no answer, for example on a timeout, may have been written, so it is never renumbered:
+     * the restart of its bucket is cancelled, the batch is retried as it is, and if the server
+     * reports a gap for it, the batch fails and the writer id is reset, as for other unknown
+     * outcomes.
+     */
+    void maybeRestartSequences(Set<PhysicalTablePath> tablePaths) throws Throwable {
+        List<TableBucket> ready;
+        synchronized (this) {
+            ready = bucketsReadyToRestart();
+            if (ready.isEmpty()) {
+                return;
+            }
+            if (!needsNewWriterId(ready)) {
+                restartSequences(ready);
+                return;
+            }
         }
-        for (TableBucket tableBucket : bucketsToRewriteSequences) {
+        // Requested outside the lock, so the responses of other buckets are handled meanwhile. The
+        // ready buckets have no request in flight, and the sender, which runs this method, drains
+        // nothing before it returns.
+        long newWriterId = requestWriterId(tablePaths);
+        synchronized (this) {
+            setWriterId(newWriterId);
+            restartSequences(ready);
+        }
+    }
+
+    /** The buckets to restart whose batches have all been answered by the server. */
+    @GuardedBy("this")
+    private List<TableBucket> bucketsReadyToRestart() {
+        List<TableBucket> ready = new ArrayList<>();
+        Iterator<TableBucket> buckets = bucketsToRestart.keySet().iterator();
+        while (buckets.hasNext()) {
+            TableBucket tableBucket = buckets.next();
             if (!idempotenceBucketMap.contains(tableBucket)) {
+                buckets.remove();
                 continue;
             }
             IdempotenceBucketEntry entry = idempotenceBucketMap.get(tableBucket);
             if (entry.hasBatchAwaitingResponse()) {
                 // wait for every answer, a batch still in flight may have been written
-                return;
+                continue;
             }
             if (entry.hasBatchWithUnknownOutcome()) {
-                // A batch of the bucket may have been written, so it must not be renumbered under
-                // a new epoch. Cancel the bump: the batch is retried as it is, and if the server
-                // reports a gap for it, it fails and the writer id is reset.
+                // A batch of the bucket may have been written, so it must not be renumbered.
+                // Cancel the restart: the batch is retried as it is, and if the server reports a
+                // gap for it, it fails and the writer id is reset.
                 LOG.info(
-                        "Not bumping epoch {} of writer {}, a batch of table-bucket {} may have "
-                                + "been written.",
-                        writerEpoch,
-                        writerId,
-                        tableBucket);
-                bucketsToRewriteSequences.remove(tableBucket);
-                if (bucketsToRewriteSequences.isEmpty()) {
-                    epochBumpRequired = false;
-                }
-                return;
+                        "Not restarting the sequence of table-bucket {} of writer {}, one of its "
+                                + "batches may have been written.",
+                        tableBucket,
+                        writerId);
+                buckets.remove();
+                continue;
+            }
+            ready.add(tableBucket);
+        }
+        return ready;
+    }
+
+    /**
+     * Whether one of the buckets can only restart under a new writer id: it is on the current
+     * writer id, and an epoch can't tell its restart apart from its old sequence, because not all
+     * of its batches carry one or the epoch is exhausted.
+     */
+    @GuardedBy("this")
+    private boolean needsNewWriterId(List<TableBucket> buckets) {
+        for (TableBucket tableBucket : buckets) {
+            IdempotenceBucketEntry entry = idempotenceBucketMap.get(tableBucket);
+            if (entry.writerId() != writerId) {
+                // the writer id was renewed since, the bucket restarts under it
+                continue;
+            }
+            if (!carriesWriterEpoch(tableBucket, entry)
+                    || (entry.writerEpoch() == writerEpoch && writerEpoch == Short.MAX_VALUE)) {
+                return true;
             }
         }
-        boolean canRewrite = writerEpoch < Short.MAX_VALUE;
-        for (TableBucket tableBucket : bucketsToRewriteSequences) {
-            if (idempotenceBucketMap.contains(tableBucket)
-                    && !idempotenceBucketMap.get(tableBucket).inflightBatchesHaveWriterEpoch()) {
-                canRewrite = false;
-            }
-        }
-        if (!canRewrite) {
-            LOG.info(
-                    "Can't bump epoch {} of writer {}, requesting a new writer id instead.",
-                    writerEpoch,
-                    writerId);
-            resetWriterId();
-            return;
-        }
-        writerEpoch = (short) (writerEpoch + 1);
-        LOG.info("Bumped the epoch of writer {} to {}.", writerId, writerEpoch);
-        for (TableBucket tableBucket : bucketsToRewriteSequences) {
+        return false;
+    }
+
+    /** Renumbers the in-flight batches of the buckets from sequence 0. */
+    @GuardedBy("this")
+    private void restartSequences(List<TableBucket> buckets) {
+        boolean bumpEpoch = false;
+        for (TableBucket tableBucket : buckets) {
             if (idempotenceBucketMap.contains(tableBucket)) {
-                idempotenceBucketMap.startBatchSequencesAtBeginning(
-                        tableBucket, writerId, writerEpoch);
+                IdempotenceBucketEntry entry = idempotenceBucketMap.get(tableBucket);
+                // a bucket behind the current writer id or epoch restarts under the current one
+                bumpEpoch |=
+                        entry.writerId() == writerId
+                                && entry.writerEpoch() == writerEpoch
+                                && carriesWriterEpoch(tableBucket, entry);
             }
         }
-        bucketsToRewriteSequences.clear();
-        epochBumpRequired = false;
+        if (bumpEpoch) {
+            writerEpoch = (short) (writerEpoch + 1);
+            LOG.info("Bumped the epoch of writer {} to {}.", writerId, writerEpoch);
+        }
+        for (TableBucket tableBucket : buckets) {
+            // the sequences of all buckets are discarded if the writer id was reset meanwhile
+            if (idempotenceBucketMap.contains(tableBucket)) {
+                IdempotenceBucketEntry entry = idempotenceBucketMap.get(tableBucket);
+                short epoch =
+                        carriesWriterEpoch(tableBucket, entry) ? writerEpoch : NO_WRITER_EPOCH;
+                idempotenceBucketMap.startBatchSequencesAtBeginning(tableBucket, writerId, epoch);
+                LOG.info(
+                        "Restarted the sequence of table-bucket {} under writer id {} and epoch {}.",
+                        tableBucket,
+                        writerId,
+                        epoch);
+            }
+            bucketsToRestart.remove(tableBucket);
+        }
+    }
+
+    /** Whether every batch of the bucket that is renumbered carries a writer epoch. */
+    @GuardedBy("this")
+    private boolean carriesWriterEpoch(TableBucket tableBucket, IdempotenceBucketEntry entry) {
+        return bucketsToRestart.getOrDefault(tableBucket, true)
+                && entry.inflightBatchesHaveWriterEpoch();
     }
 
     /**
@@ -305,8 +381,7 @@ public class IdempotenceManager {
      */
     synchronized void resetWriterId() {
         setWriterId(NO_WRITER_ID);
-        this.epochBumpRequired = false;
-        this.bucketsToRewriteSequences.clear();
+        this.bucketsToRestart.clear();
         this.idempotenceBucketMap.reset();
     }
 
@@ -368,7 +443,7 @@ public class IdempotenceManager {
     synchronized void handleCompletedBatch(ReadyWriteBatch readyWriteBatch) {
         TableBucket tableBucket = readyWriteBatch.tableBucket();
         WriteBatch batch = readyWriteBatch.writeBatch();
-        if (!hasWriterId(batch.writerId())) {
+        if (!isOnWriterIdOfBucket(tableBucket, batch)) {
             LOG.debug(
                     "Ignoring completed batch {} with writer id {}, and batch sequence {} "
                             + "since the writer id has been reset internally",
@@ -389,8 +464,9 @@ public class IdempotenceManager {
 
     synchronized void handleFailedBatch(
             ReadyWriteBatch readyWriteBatch, Exception exception, boolean adjustSequenceNumbers) {
+        TableBucket tableBucket = readyWriteBatch.tableBucket();
         WriteBatch batch = readyWriteBatch.writeBatch();
-        if (!hasWriterId(batch.writerId())) {
+        if (!isOnWriterIdOfBucket(tableBucket, batch)) {
             LOG.debug(
                     "Ignoring failed batch {} with writer id {}, and batch sequence {} "
                             + "since the writer id has been reset internally",
@@ -401,44 +477,52 @@ public class IdempotenceManager {
             return;
         }
 
-        if (batch.hasWriterEpoch()
-                && (exception instanceof OutOfOrderSequenceException
-                        || exception instanceof UnknownWriterIdException)) {
-            // The batch can carry an epoch, so instead of dropping the writer id, bump the epoch
-            // and restart the bucket's sequence at 0, as the Kafka idempotent producer does.
+        if (exception instanceof OutOfOrderSequenceException
+                || exception instanceof UnknownWriterIdException) {
             LOG.warn(
                     "The server returned {} for table-bucket {} with writer id {}, epoch {} and batch sequence {}.",
                     exception,
-                    readyWriteBatch.tableBucket(),
+                    tableBucket,
                     batch.writerId(),
                     batch.writerEpoch(),
                     batch.batchSequence());
-            removeInFlightBatch(readyWriteBatch);
-            if (batch.isOutcomeUnknown()) {
-                // an earlier attempt of this batch got no answer and may have been written, so
-                // it must not be renumbered under a new epoch
+            if (batch.isOutcomeUnknown() || !restartsSequenceOnGap(batch)) {
+                // An earlier attempt of this batch may have been written, or the sequence of the
+                // bucket can't be restarted, so no guarantee can be made about the batches behind
+                // it. Discard the writer id and the sequences of all buckets.
                 resetWriterId();
-            } else if (batch.writerEpoch() == writerEpoch) {
-                requestEpochBump(readyWriteBatch.tableBucket());
+            } else {
+                // The batch was not written. Restart the sequence of the bucket, so the batches
+                // behind it are not rejected for the gap it leaves.
+                removeInFlightBatch(readyWriteBatch);
+                requestSequenceRestart(tableBucket, batch.hasWriterEpoch());
             }
-        } else if (exception instanceof OutOfOrderSequenceException
-                || exception instanceof UnknownWriterIdException) {
-            LOG.error(
-                    "The server returned {} for table-bucket {} with writer id {} and batch sequence {}.",
-                    exception,
-                    readyWriteBatch.tableBucket(),
-                    batch.writerId(),
-                    batch.batchSequence());
-            // Reset the writer state since we have hit an irrecoverable exception and cannot make
-            // any guarantees about the previously committed message. Note that this will discard
-            // the writer id and batch sequence for all existing buckets.
-            resetWriterId();
         } else {
             removeInFlightBatch(readyWriteBatch);
             if (adjustSequenceNumbers) {
                 idempotenceBucketMap.adjustSequencesDueToFailedBatch(readyWriteBatch);
             }
         }
+    }
+
+    /**
+     * Whether a gap reported for the batch restarts the sequence of its bucket instead of failing
+     * the batch. A batch with a writer epoch restarts under a bumped epoch. A batch without one,
+     * such as a KV batch, restarts under a new writer id, but only once the cluster allows V3
+     * batches: before that, a gap fails the batch and resets the writer id, as it always did.
+     */
+    private boolean restartsSequenceOnGap(WriteBatch batch) {
+        return batch.hasWriterEpoch() || writeRecordBatchV3();
+    }
+
+    /**
+     * Whether the batch was numbered under the writer id the bucket is on. It is not once the
+     * writer id was reset, which discards the sequences of all buckets. Buckets can be on different
+     * writer ids for a while: after a new writer id was requested to restart one bucket, the others
+     * move to it once their in-flight batches have completed.
+     */
+    synchronized boolean isOnWriterIdOfBucket(TableBucket tableBucket, WriteBatch batch) {
+        return idempotenceBucketMap.getOrCreate(tableBucket).writerId() == batch.writerId();
     }
 
     synchronized boolean hasInflightBatches(TableBucket tableBucket) {
@@ -506,20 +590,21 @@ public class IdempotenceManager {
                 // already seen the new epoch. The renumbered batch can be retried.
                 return batch.sequenceHasBeenReset() || batch.writerEpoch() < writerEpoch;
             }
-            if (error == Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION
-                    || error == Errors.UNKNOWN_WRITER_ID_EXCEPTION) {
-                // A real gap, for example because the server expired the writer state. Bump the
-                // epoch and retry the batch from sequence 0, as the Kafka idempotent producer
-                // does. A batch whose earlier attempt got no answer may have been written, so it
-                // is not retried under a new epoch: it fails and the writer id is reset.
-                if (batch.isOutcomeUnknown()) {
-                    return false;
-                }
-                if (batch.writerEpoch() == writerEpoch) {
-                    requestEpochBump(tableBucket);
-                }
-                return true;
+        }
+
+        if ((error == Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION
+                        || error == Errors.UNKNOWN_WRITER_ID_EXCEPTION)
+                && restartsSequenceOnGap(batch)) {
+            // A real gap, for example because the server expired the writer state. The server
+            // rejected the batch before writing it, so restart the sequence of the bucket and
+            // retry the batch from sequence 0, as the Kafka idempotent producer does. A batch
+            // whose earlier attempt may have been written is not renumbered: it fails and the
+            // writer id is reset.
+            if (batch.isOutcomeUnknown()) {
+                return false;
             }
+            requestSequenceRestart(tableBucket, batch.hasWriterEpoch());
+            return true;
         }
 
         return false;
@@ -546,15 +631,19 @@ public class IdempotenceManager {
         if (isWriterIdValid()) {
             return;
         }
+        setWriterId(requestWriterId(tablePaths));
+    }
 
+    /** Requests a new writer id from the server, with a few retries. */
+    private long requestWriterId(Set<PhysicalTablePath> tablePaths) throws Throwable {
         int retryCount = 0;
         while (true) {
             try {
-                tabletServerGateway
+                // TODO: can optimize into async response handling.
+                return tabletServerGateway
                         .initWriter(prepareInitWriterRequest(tablePaths))
-                        .thenAccept(response -> setWriterId(response.getWriterId()))
-                        .get(); // TODO: can optimize into async response handling.
-                return;
+                        .get()
+                        .getWriterId();
             } catch (Exception e) {
                 Throwable t = ExceptionUtils.stripExecutionException(e);
                 if (t instanceof AuthorizationException || retryCount >= RETRY_TIMES) {

@@ -1380,17 +1380,17 @@ public final class RecordAccumulator {
                 return true;
             }
 
-            if (idempotenceManager.isWaitingForEpochBump(tableBucket)) {
-                // The bucket's in-flight batches are about to be renumbered under a new epoch,
-                // so don't send any of them with their old sequence.
+            if (idempotenceManager.isWaitingForSequenceRestart(tableBucket)) {
+                // The bucket's in-flight batches are about to be renumbered under a new epoch or
+                // writer id, so don't send any of them with their old sequence.
                 return true;
             }
 
             if (!first.hasBatchSequence()
                     && idempotenceManager.hasInflightBatches(tableBucket)
                     && idempotenceManager.hasStaleWriterState(tableBucket, first)) {
-                // The writer epoch was bumped. The bucket moves to the new epoch, restarting at
-                // sequence 0, only once its batches of the older epoch have completed.
+                // The writer epoch was bumped or the writer id renewed. The bucket moves to
+                // the new one, restarting at sequence 0, only once its older batches completed.
                 return true;
             }
 
