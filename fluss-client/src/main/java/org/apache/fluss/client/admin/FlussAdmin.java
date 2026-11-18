@@ -78,6 +78,7 @@ import org.apache.fluss.rpc.messages.DatabaseExistsResponse;
 import org.apache.fluss.rpc.messages.DeleteProducerOffsetsRequest;
 import org.apache.fluss.rpc.messages.DescribeBucketsRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterConfigsRequest;
+import org.apache.fluss.rpc.messages.DescribeClusterFeaturesRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterRequest;
 import org.apache.fluss.rpc.messages.DropAclsRequest;
 import org.apache.fluss.rpc.messages.DropDatabaseRequest;
@@ -105,6 +106,7 @@ import org.apache.fluss.rpc.messages.ListRemoteLogManifestsRequest;
 import org.apache.fluss.rpc.messages.ListTablesRequest;
 import org.apache.fluss.rpc.messages.ListTablesResponse;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
+import org.apache.fluss.rpc.messages.PbClusterFeature;
 import org.apache.fluss.rpc.messages.PbKeyValue;
 import org.apache.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import org.apache.fluss.rpc.messages.PbPartitionInfo;
@@ -117,6 +119,7 @@ import org.apache.fluss.rpc.messages.RemoveServerTagByRackRequest;
 import org.apache.fluss.rpc.messages.RemoveServerTagRequest;
 import org.apache.fluss.rpc.messages.TableExistsRequest;
 import org.apache.fluss.rpc.messages.TableExistsResponse;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesRequest;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.security.acl.AclBinding;
 import org.apache.fluss.security.acl.AclBindingFilter;
@@ -1219,6 +1222,36 @@ public class FlussAdmin implements Admin {
         return retryableCoordinatorGateway
                 .describeCluster(new DescribeClusterRequest())
                 .thenApply(ClientRpcMessageUtils::toClusterDescription);
+    }
+
+    @Override
+    public CompletableFuture<Collection<ClusterFeatureDescription>> describeClusterFeatures() {
+        // retried after a metadata refresh, so it also works right after a coordinator change
+        return retryableCoordinatorGateway
+                .describeClusterFeatures(new DescribeClusterFeaturesRequest())
+                .thenApply(
+                        response -> {
+                            List<ClusterFeatureDescription> features = new ArrayList<>();
+                            for (PbClusterFeature feature : response.getFeaturesList()) {
+                                features.add(
+                                        new ClusterFeatureDescription(
+                                                feature.getName(),
+                                                feature.getFinalizedLevel(),
+                                                feature.getSupportedLevel()));
+                            }
+                            return features;
+                        });
+    }
+
+    @Override
+    public CompletableFuture<Void> updateClusterFeatures(
+            Map<String, Integer> featureLevels, boolean validateOnly) {
+        UpdateClusterFeaturesRequest request =
+                new UpdateClusterFeaturesRequest().setValidateOnly(validateOnly);
+        featureLevels.forEach((name, level) -> request.addFeature().setName(name).setLevel(level));
+        // A raise is idempotent, so it is safe to retry after a metadata refresh when the
+        // coordinator changed. A coordinator that lost leadership rejects it without any change.
+        return retryableCoordinatorGateway.updateClusterFeatures(request).thenApply(r -> null);
     }
 
     @VisibleForTesting

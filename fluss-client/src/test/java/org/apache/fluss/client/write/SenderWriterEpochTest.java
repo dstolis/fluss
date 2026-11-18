@@ -59,6 +59,7 @@ import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH_PK;
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeProduceLogResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toProduceLogDataForBuckets;
 import static org.apache.fluss.testutils.DataTestUtils.row;
@@ -95,7 +96,7 @@ final class SenderWriterEpochTest {
      */
     @Test
     void testOutOfOrderSequenceBumpsWriterEpochForV3Batches() throws Exception {
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
@@ -144,7 +145,7 @@ final class SenderWriterEpochTest {
      */
     @Test
     void testEpochBumpRenumbersInFlightBatches() throws Exception {
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
@@ -188,7 +189,7 @@ final class SenderWriterEpochTest {
      */
     @Test
     void testBucketReportingGapAfterEpochBumpIsRenumbered() throws Exception {
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
@@ -237,7 +238,7 @@ final class SenderWriterEpochTest {
      */
     @Test
     void testEpochBumpWaitsForAllResponses() throws Exception {
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
@@ -277,7 +278,7 @@ final class SenderWriterEpochTest {
      */
     @Test
     void testUnknownOutcomeResetsWriterIdInsteadOfBumpingEpoch() throws Exception {
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
@@ -315,7 +316,7 @@ final class SenderWriterEpochTest {
     /** Without V3, batches carry no epoch, so a real gap still fails the batch and resets. */
     @Test
     void testOutOfOrderSequenceResetsWriterWithoutV3() throws Exception {
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 1);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 2);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
@@ -345,7 +346,7 @@ final class SenderWriterEpochTest {
      */
     @Test
     void testGapForBatchWithoutEpochRenewsWriterIdOnceV3IsAllowed() throws Exception {
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 1);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 2);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
@@ -354,7 +355,7 @@ final class SenderWriterEpochTest {
         // the batch is created in an older format, then the cluster allows V3
         CompletableFuture<Exception> future = new CompletableFuture<>();
         appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> future.complete(e));
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
         sender1.runOnce();
         finishIdempotentProduceLogRequest(
                 0, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
@@ -381,11 +382,8 @@ final class SenderWriterEpochTest {
      */
     @Test
     void testV3BatchRejectedBeforeLeaderAppliedTheLevelIsRetried() throws Exception {
-        // only the leader of bucket 0 reported the level, the connection to the leader of
-        // bucket 1 negotiated its versions before
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 1);
-        metadataUpdater.setNegotiatedProduceLogVersion(
-                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb1), (short) 2);
+        // one tablet server reported the level, the leader of bucket 1 has not applied it yet
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();

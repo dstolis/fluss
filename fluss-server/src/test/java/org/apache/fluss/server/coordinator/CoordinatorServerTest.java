@@ -19,17 +19,19 @@ package org.apache.fluss.server.coordinator;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.exception.FlussException;
 import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.server.ServerBase;
 import org.apache.fluss.server.ServerTestBase;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
+import org.apache.fluss.server.zk.data.ZkData;
+import org.apache.fluss.server.zk.data.ZkVersion;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.Collections;
 import java.util.Optional;
 
 import static org.apache.fluss.testutils.common.CommonTestUtils.waitUntil;
@@ -59,6 +61,29 @@ class CoordinatorServerTest extends ServerTestBase {
         return coordinatorServer;
     }
 
+    @Test
+    void testRefusesToStartBelowAFinalizedClusterFeatureLevel() throws Exception {
+        coordinatorServer.close();
+        coordinatorServer = null;
+        // a later version finalized a cluster feature that this version does not know, and a
+        // coordinator that cannot read data of that level must not lead the cluster
+        zookeeperClient.updateClusterFeatureLevels(
+                Collections.singletonMap("added-by-a-later-version", 1),
+                zookeeperClient.getClusterFeatureLevels().get().zkVersion(),
+                ZkVersion.MATCH_ANY_VERSION.getVersion());
+        CoordinatorServer server = new CoordinatorServer(createConfiguration());
+        try {
+            assertThatThrownBy(server::start)
+                    .rootCause()
+                    .isInstanceOf(IllegalConfigurationException.class)
+                    .hasMessageContaining("does not support the finalized cluster features")
+                    .hasMessageContaining("added-by-a-later-version");
+        } finally {
+            server.close();
+            zookeeperClient.getCuratorClient().delete().forPath(ZkData.ClusterFeaturesZNode.path());
+        }
+    }
+
     @Override
     protected ServerBase getStartFailServer() {
         Configuration configuration = createConfiguration();
@@ -68,24 +93,6 @@ class CoordinatorServerTest extends ServerTestBase {
         // failure in startZookeeperClient() during start().
         configuration.setString(ConfigOptions.ZOOKEEPER_ADDRESS, "");
         return new CoordinatorServer(configuration);
-    }
-
-    @Test
-    void testRefusesToStartWithClusterFeatureLevelInItsConfiguration() throws Exception {
-        Configuration configuration = createConfiguration();
-        configuration.set(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION, 3);
-        CoordinatorServer server = new CoordinatorServer(configuration);
-        try {
-            assertThatThrownBy(server::start)
-                    .isInstanceOf(FlussException.class)
-                    .rootCause()
-                    .isInstanceOf(IllegalConfigurationException.class)
-                    .hasMessageContaining(
-                            "[cluster.feature.log.record-batch.version] must not be set in the "
-                                    + "server configuration");
-        } finally {
-            server.close();
-        }
     }
 
     @Override

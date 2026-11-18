@@ -17,13 +17,12 @@
 
 package org.apache.fluss.server.feature;
 
-import org.apache.fluss.config.ConfigOptions;
-import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.zk.NOPErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
+import org.apache.fluss.server.zk.data.ZkVersion;
 import org.apache.fluss.testutils.common.AllCallbackWrapper;
 
 import org.junit.jupiter.api.AfterAll;
@@ -34,6 +33,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.Collections;
 
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,17 +68,11 @@ class ClusterFeaturesTest {
     @Test
     void testServerStartsWhileItSupportsTheFinalizedLevels() throws Exception {
         // nothing finalized yet
-        assertThatCode(
-                        () ->
-                                ClusterFeatures.checkSupportsFinalizedFeatures(
-                                        new Configuration(), zkClient))
+        assertThatCode(() -> ClusterFeatures.checkSupportsFinalizedFeatures(zkClient))
                 .doesNotThrowAnyException();
 
         setFinalizedLevel(3);
-        assertThatCode(
-                        () ->
-                                ClusterFeatures.checkSupportsFinalizedFeatures(
-                                        new Configuration(), zkClient))
+        assertThatCode(() -> ClusterFeatures.checkSupportsFinalizedFeatures(zkClient))
                 .doesNotThrowAnyException();
     }
 
@@ -87,10 +81,7 @@ class ClusterFeaturesTest {
         // a newer version of the cluster finalized a level this server does not know
         setFinalizedLevel(4);
 
-        assertThatThrownBy(
-                        () ->
-                                ClusterFeatures.checkSupportsFinalizedFeatures(
-                                        new Configuration(), zkClient))
+        assertThatThrownBy(() -> ClusterFeatures.checkSupportsFinalizedFeatures(zkClient))
                 .isInstanceOf(IllegalConfigurationException.class)
                 .hasMessageContaining(
                         "does not support the finalized cluster features "
@@ -98,21 +89,16 @@ class ClusterFeaturesTest {
     }
 
     @Test
-    void testFeatureLevelMustNotBeInServerConfig() {
-        Configuration conf = new Configuration();
-        conf.set(ConfigOptions.DEFAULT_REPLICATION_FACTOR, 3);
-        assertThatCode(() -> ClusterFeatures.checkNotInServerConfig(conf))
-                .doesNotThrowAnyException();
+    void testServerRefusesToStartWhenItDoesNotKnowAFinalizedFeature() throws Exception {
+        // a stored feature is above its baseline, so a version that does not know it lacks it
+        zkClient.createClusterFeatureLevels(
+                Collections.singletonMap("added-by-a-later-version", 1),
+                ZkVersion.MATCH_ANY_VERSION.getVersion());
 
-        // any level, also the baseline, and also a feature this version does not know
-        conf.set(ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION, 2);
-        conf.setString("cluster.feature.added-by-a-later-version", "1");
-        assertThatThrownBy(() -> ClusterFeatures.checkNotInServerConfig(conf))
+        assertThatThrownBy(() -> ClusterFeatures.checkSupportsFinalizedFeatures(zkClient))
                 .isInstanceOf(IllegalConfigurationException.class)
                 .hasMessageContaining(
-                        "[cluster.feature.added-by-a-later-version, "
-                                + "cluster.feature.log.record-batch.version] must not be set in "
-                                + "the server configuration");
+                        "[added-by-a-later-version (unknown to this version, finalized 1)]");
     }
 
     @Test
@@ -124,9 +110,8 @@ class ClusterFeaturesTest {
     }
 
     private static void setFinalizedLevel(int level) throws Exception {
-        zkClient.upsertEntityConfigs(
-                Collections.singletonMap(
-                        ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION.key(),
-                        String.valueOf(level)));
+        zkClient.createClusterFeatureLevels(
+                Collections.singletonMap(LOG_RECORD_BATCH_VERSION.featureName(), level),
+                ZkVersion.MATCH_ANY_VERSION.getVersion());
     }
 }

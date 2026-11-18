@@ -29,20 +29,17 @@ import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.metrics.TestingClientMetricGroup;
-import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.coordinator.TestCoordinatorGateway;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
-
-import javax.annotation.Nullable;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /** Testing class for metadata updater. */
@@ -59,12 +56,8 @@ public class TestingMetadataUpdater extends MetadataUpdater {
     private final TestCoordinatorGateway coordinatorGateway;
     private final Map<Integer, TestTabletServerGateway> tabletServerGatewayMap;
 
-    /** The PRODUCE_LOG version every tablet server negotiates, if any. */
-    @Nullable private volatile Short negotiatedProduceLogVersion;
-
-    /** The PRODUCE_LOG versions of the tablet servers that negotiated their own version. */
-    private final Map<Integer, Short> negotiatedProduceLogVersionByServer =
-            new ConcurrentHashMap<>();
+    /** The finalized cluster feature levels the tablet servers reported to this client. */
+    private volatile ClusterFeatureLevels finalizedFeatureLevels = ClusterFeatureLevels.baseline();
 
     public TestingMetadataUpdater(Map<TablePath, TableInfo> tableInfos) {
         this(
@@ -99,27 +92,14 @@ public class TestingMetadataUpdater extends MetadataUpdater {
         }
     }
 
-    /** Lets every tablet server negotiate the given PRODUCE_LOG version, or none if null. */
-    public void setNegotiatedProduceLogVersion(@Nullable Short version) {
-        this.negotiatedProduceLogVersion = version;
-    }
-
-    /**
-     * Lets the given tablet server negotiate the given PRODUCE_LOG version, whatever the other
-     * tablet servers negotiate. Versions are negotiated per connection, so a writer can hold
-     * connections of different versions, for example after it reconnected to one server.
-     */
-    public void setNegotiatedProduceLogVersion(int serverId, short version) {
-        negotiatedProduceLogVersionByServer.put(serverId, version);
+    /** Lets a tablet server report the given finalized level of the given cluster feature. */
+    public void setFinalizedFeatureLevel(ClusterFeature feature, int level) {
+        this.finalizedFeatureLevels = finalizedFeatureLevels.with(feature, level);
     }
 
     @Override
-    public Optional<Short> negotiatedApiVersion(ServerNode serverNode, ApiKeys apiKey) {
-        if (apiKey != ApiKeys.PRODUCE_LOG) {
-            return Optional.empty();
-        }
-        Short version = negotiatedProduceLogVersionByServer.get(serverNode.id());
-        return Optional.ofNullable(version != null ? version : negotiatedProduceLogVersion);
+    public int finalizedFeatureLevel(ClusterFeature feature) {
+        return finalizedFeatureLevels.level(feature);
     }
 
     public void updateTableInfos(Map<TablePath, TableInfo> tableInfos) {

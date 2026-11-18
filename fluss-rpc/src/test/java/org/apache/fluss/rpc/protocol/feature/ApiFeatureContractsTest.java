@@ -18,20 +18,21 @@
 package org.apache.fluss.rpc.protocol.feature;
 
 import org.apache.fluss.exception.UnsupportedVersionException;
-import org.apache.fluss.rpc.messages.PbApiVersion;
+import org.apache.fluss.rpc.messages.ApiVersionsResponse;
+import org.apache.fluss.rpc.messages.PbClusterFeatureLevel;
 import org.apache.fluss.rpc.protocol.ApiKeys;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
-import java.util.List;
+import java.util.Collections;
 
 import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link ApiFeatureContracts}. */
+/** Tests for {@link ApiFeatureContracts} and {@link ClusterFeatureLevels}. */
 class ApiFeatureContractsTest {
 
     private static final ClusterFeatureLevels BASELINE = ClusterFeatureLevels.baseline();
@@ -39,18 +40,6 @@ class ApiFeatureContractsTest {
 
     @Test
     void testLevelsPerApiVersion() {
-        assertThat(
-                        ApiFeatureContracts.maxLevel(
-                                ApiKeys.PRODUCE_LOG, (short) 0, LOG_RECORD_BATCH_VERSION))
-                .isEqualTo(2);
-        assertThat(
-                        ApiFeatureContracts.maxLevel(
-                                ApiKeys.PRODUCE_LOG, (short) 1, LOG_RECORD_BATCH_VERSION))
-                .isEqualTo(2);
-        assertThat(
-                        ApiFeatureContracts.maxLevel(
-                                ApiKeys.PRODUCE_LOG, (short) 2, LOG_RECORD_BATCH_VERSION))
-                .isEqualTo(3);
         assertThat(
                         ApiFeatureContracts.maxLevel(
                                 ApiKeys.FETCH_LOG, (short) 0, LOG_RECORD_BATCH_VERSION))
@@ -67,40 +56,18 @@ class ApiFeatureContractsTest {
                         ApiFeatureContracts.maxLevel(
                                 ApiKeys.LIMIT_SCAN, (short) 1, LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
-        // APIs without a contract carry no log record batches
+        // APIs without a contract return no log record batches to a reader
         assertThat(
                         ApiFeatureContracts.maxLevel(
                                 ApiKeys.PUT_KV, (short) 0, LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(Integer.MAX_VALUE);
-    }
-
-    @Test
-    void testWriteVersionsAreAdvertisedOnlyOnceFinalized() {
-        assertThat(ApiFeatureContracts.highestEnabledVersion(ApiKeys.PRODUCE_LOG, BASELINE))
-                .isEqualTo((short) 1);
-        assertThat(ApiFeatureContracts.highestEnabledVersion(ApiKeys.PRODUCE_LOG, V3))
-                .isEqualTo((short) 2);
-        // readers may always use the newest version, it returns older data as stored
-        assertThat(ApiFeatureContracts.highestEnabledVersion(ApiKeys.FETCH_LOG, BASELINE))
-                .isEqualTo((short) 1);
-        assertThat(ApiFeatureContracts.highestEnabledVersion(ApiKeys.PUT_KV, BASELINE))
-                .isEqualTo(ApiKeys.PUT_KV.highestSupportedVersion);
-    }
-
-    @Test
-    void testCapAdvertisedVersions() {
-        List<PbApiVersion> versions =
-                Arrays.asList(
-                        apiVersion(ApiKeys.PRODUCE_LOG),
-                        apiVersion(ApiKeys.FETCH_LOG),
-                        apiVersion(ApiKeys.PUT_KV));
-
-        ApiFeatureContracts.capAdvertisedVersions(versions, BASELINE);
-
-        assertThat(versions.get(0).getMaxVersion()).isEqualTo((short) 1);
-        assertThat(versions.get(1).getMaxVersion()).isEqualTo((short) 1);
-        assertThat(versions.get(2).getMaxVersion())
-                .isEqualTo(ApiKeys.PUT_KV.highestSupportedVersion);
+        // write APIs have no contract, writers learn the finalized level from the tablet servers
+        assertThat(
+                        ApiFeatureContracts.maxLevel(
+                                ApiKeys.PRODUCE_LOG,
+                                ApiKeys.PRODUCE_LOG.highestSupportedVersion,
+                                LOG_RECORD_BATCH_VERSION))
+                .isEqualTo(Integer.MAX_VALUE);
     }
 
     @Test
@@ -116,40 +83,73 @@ class ApiFeatureContractsTest {
         assertThatThrownBy(
                         () -> ApiFeatureContracts.checkWrite(LOG_RECORD_BATCH_VERSION, 3, BASELINE))
                 .isInstanceOf(UnsupportedVersionException.class)
-                .hasMessageContaining("the cluster has finalized level 2")
-                .hasMessageContaining("cluster.feature.log.record-batch.version");
-    }
-
-    @Test
-    void testCanRead() {
-        assertThat(
-                        ApiFeatureContracts.canRead(
-                                ApiKeys.FETCH_LOG, (short) 0, LOG_RECORD_BATCH_VERSION, 2))
-                .isTrue();
-        assertThat(
-                        ApiFeatureContracts.canRead(
-                                ApiKeys.FETCH_LOG, (short) 0, LOG_RECORD_BATCH_VERSION, 3))
-                .isFalse();
-        assertThat(
-                        ApiFeatureContracts.canRead(
-                                ApiKeys.FETCH_LOG, (short) 1, LOG_RECORD_BATCH_VERSION, 3))
-                .isTrue();
+                .hasMessageContaining("of cluster feature 'log.record-batch.version'")
+                .hasMessageContaining("the cluster has finalized level 2");
     }
 
     @Test
     void testFeatureLevels() {
-        assertThat(LOG_RECORD_BATCH_VERSION.configOption().key())
-                .isEqualTo(ClusterFeature.CONFIG_PREFIX + LOG_RECORD_BATCH_VERSION.featureName());
+        assertThat(ClusterFeature.forName("log.record-batch.version"))
+                .isSameAs(LOG_RECORD_BATCH_VERSION);
+        assertThat(ClusterFeature.forName("no.such-feature")).isNull();
+        assertThat(ClusterFeatureLevels.latest().level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
+        // only features above their baseline are stored for the cluster
+        assertThat(BASELINE.toMap()).isEmpty();
+        assertThat(V3.toMap()).containsOnlyKeys("log.record-batch.version").containsValue(3);
+        assertThat(ClusterFeatureLevels.fromMap(V3.toMap())).isEqualTo(V3);
+        assertThat(ClusterFeatureLevels.unknownFeatures(V3.toMap())).isEmpty();
         assertThat(BASELINE.level(LOG_RECORD_BATCH_VERSION)).isEqualTo(2);
         assertThat(V3.level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
         // a copy with a new level leaves the original unchanged
         assertThat(BASELINE.level(LOG_RECORD_BATCH_VERSION)).isEqualTo(2);
     }
 
-    private static PbApiVersion apiVersion(ApiKeys api) {
-        return new PbApiVersion()
-                .setApiKey(api.id)
-                .setMinVersion(api.lowestSupportedVersion)
-                .setMaxVersion(api.highestSupportedVersion);
+    @Test
+    void testReportedLevelsRoundTrip() {
+        ApiVersionsResponse response = new ApiVersionsResponse();
+        V3.reportIn(response);
+
+        assertThat(response.getFinalizedFeaturesList())
+                .singleElement()
+                .satisfies(
+                        reported -> {
+                            assertThat(reported.getName()).isEqualTo("log.record-batch.version");
+                            assertThat(reported.getLevel()).isEqualTo(3);
+                        });
+        assertThat(ClusterFeatureLevels.fromReported(response.getFinalizedFeaturesList()))
+                .isEqualTo(V3);
+    }
+
+    @Test
+    void testLevelsOfServerThatReportsNoneAreTheBaseline() {
+        // a server that does not know cluster features reports none
+        assertThat(ClusterFeatureLevels.fromReported(Collections.emptyList())).isEqualTo(BASELINE);
+        // a feature this build does not know is ignored
+        assertThat(
+                        ClusterFeatureLevels.fromReported(
+                                Collections.singletonList(reported("some.future-feature", 7))))
+                .isEqualTo(BASELINE);
+    }
+
+    @Test
+    void testReportedLevelIsNeverBelowTheBaseline() {
+        assertThat(
+                        ClusterFeatureLevels.fromReported(
+                                        Arrays.asList(
+                                                reported("log.record-batch.version", 1),
+                                                reported("some.future-feature", 7)))
+                                .level(LOG_RECORD_BATCH_VERSION))
+                .isEqualTo(2);
+        // a newer server may have finalized a level this build does not know yet
+        assertThat(
+                        ClusterFeatureLevels.fromReported(
+                                        Collections.singletonList(
+                                                reported("log.record-batch.version", 4)))
+                                .level(LOG_RECORD_BATCH_VERSION))
+                .isEqualTo(4);
+    }
+
+    private static PbClusterFeatureLevel reported(String name, int level) {
+        return new PbClusterFeatureLevel().setName(name).setLevel(level);
     }
 }

@@ -23,7 +23,6 @@ import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
-import org.apache.fluss.config.cluster.AlterConfigOpType;
 import org.apache.fluss.fs.local.LocalFileSystem;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
@@ -34,15 +33,15 @@ import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.AdminReadOnlyGateway;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
-import org.apache.fluss.rpc.messages.AlterClusterConfigsRequest;
 import org.apache.fluss.rpc.messages.MetadataRequest;
 import org.apache.fluss.rpc.messages.MetadataResponse;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
-import org.apache.fluss.rpc.messages.PbAlterConfig;
 import org.apache.fluss.rpc.messages.PbNotifyLeaderAndIsrReqForBucket;
 import org.apache.fluss.rpc.messages.StopReplicaRequest;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesRequest;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.AccessControlEntry;
 import org.apache.fluss.security.acl.AclBinding;
 import org.apache.fluss.server.ServerBase;
@@ -72,6 +71,7 @@ import org.apache.fluss.server.zk.data.PartitionRegistration;
 import org.apache.fluss.server.zk.data.RemoteLogManifestHandle;
 import org.apache.fluss.server.zk.data.TableAssignment;
 import org.apache.fluss.server.zk.data.TableRegistration;
+import org.apache.fluss.server.zk.data.ZkVersion;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.clock.Clock;
 import org.apache.fluss.utils.clock.SystemClock;
@@ -133,6 +133,13 @@ public final class FlussClusterExtension
     private ServerInfo coordinatorServerInfo;
     private TestingServer zooKeeperServer;
     private ZooKeeperClient zooKeeperClient;
+
+    /**
+     * Whether the cluster starts with every cluster feature at its baseline level, like a cluster
+     * upgraded from an older version, instead of at the latest levels like a new cluster.
+     */
+    private boolean baselineClusterFeatureLevels;
+
     private RpcClient rpcClient;
     private MetadataManager metadataManager;
 
@@ -227,6 +234,13 @@ public final class FlussClusterExtension
                         zooKeeperClient,
                         clusterConf,
                         new LakeCatalogDynamicLoader(clusterConf, null, true));
+        if (baselineClusterFeatureLevels) {
+            // like a cluster that was upgraded from a version without cluster features: the
+            // levels exist before the first coordinator of this version takes leadership
+            zooKeeperClient.createClusterFeatureLevels(
+                    ClusterFeatureLevels.baseline().toMap(),
+                    ZkVersion.MATCH_ANY_VERSION.getVersion());
+        }
 
         rpcClient =
                 RpcClient.create(
@@ -704,17 +718,10 @@ public final class FlussClusterExtension
      * does, and waits until every tablet server has applied it.
      */
     public void finalizeClusterFeature(ClusterFeature feature, int level) throws Exception {
-        newCoordinatorClient()
-                .alterClusterConfigs(
-                        new AlterClusterConfigsRequest()
-                                .addAllAlterConfigs(
-                                        Collections.singletonList(
-                                                new PbAlterConfig()
-                                                        .setConfigKey(feature.configOption().key())
-                                                        .setConfigValue(String.valueOf(level))
-                                                        .setOpType(AlterConfigOpType.SET.value()))))
-                .get();
-        // tablet servers apply cluster configs asynchronously
+        UpdateClusterFeaturesRequest request = new UpdateClusterFeaturesRequest();
+        request.addFeature().setName(feature.featureName()).setLevel(level);
+        newCoordinatorClient().updateClusterFeatures(request).get();
+        // tablet servers follow the stored levels asynchronously
         retry(
                 Duration.ofMinutes(1),
                 () -> {
@@ -1080,6 +1087,7 @@ public final class FlussClusterExtension
         private String[] racks = new String[] {"rack-0"};
         private List<String> remoteDirNames = Collections.emptyList();
         private boolean useRemoteDataDir = true;
+        private boolean baselineClusterFeatureLevels = false;
 
         private final Configuration clusterConf = new Configuration();
 
@@ -1146,6 +1154,16 @@ public final class FlussClusterExtension
             return this;
         }
 
+        /**
+         * Starts the cluster with every cluster feature at its baseline level, like a cluster that
+         * was upgraded from a version without cluster features. By default the cluster is new and
+         * starts at the latest levels. Raise a level with {@link #finalizeClusterFeature}.
+         */
+        public Builder setBaselineClusterFeatureLevels(boolean baselineClusterFeatureLevels) {
+            this.baselineClusterFeatureLevels = baselineClusterFeatureLevels;
+            return this;
+        }
+
         public FlussClusterExtension build() {
             if (numOfTabletServers > 1 && racks.length == 1) {
                 String[] racks = new String[numOfTabletServers];
@@ -1155,15 +1173,18 @@ public final class FlussClusterExtension
                 this.racks = racks;
             }
 
-            return new FlussClusterExtension(
-                    numOfTabletServers,
-                    coordinatorServerListeners,
-                    tabletServerListeners,
-                    clusterConf,
-                    clock,
-                    racks,
-                    remoteDirNames,
-                    useRemoteDataDir);
+            FlussClusterExtension extension =
+                    new FlussClusterExtension(
+                            numOfTabletServers,
+                            coordinatorServerListeners,
+                            tabletServerListeners,
+                            clusterConf,
+                            clock,
+                            racks,
+                            remoteDirNames,
+                            useRemoteDataDir);
+            extension.baselineClusterFeatureLevels = baselineClusterFeatureLevels;
+            return extension;
         }
     }
 }

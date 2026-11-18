@@ -687,10 +687,10 @@ class KafkaProduceProtocolTest {
     }
 
     @Test
-    void testEmptyNegativeAndIdempotentPartitionsAreRejectedLocally() {
+    void testEmptyAndNegativePartitionsAreRejectedLocallyButIdempotentIsAccepted() {
         MemoryRecords idempotent =
                 MemoryRecords.withIdempotentRecords(
-                        Compression.NONE, 10L, (short) 0, 0, new SimpleRecord(new byte[] {1}));
+                        Compression.NONE, 10L, (short) 4, 7, new SimpleRecord(new byte[] {1}));
         ProduceResponse response =
                 dispatch(
                         request(
@@ -701,15 +701,21 @@ class KafkaProduceProtocolTest {
                                 partition(2, idempotent),
                                 partition(3, records())),
                         command -> {
-                            assertThat(command.topics().get(0).partitions()).hasSize(1);
+                            List<KafkaProduceCommand.PartitionWrite> partitions =
+                                    command.topics().get(0).partitions();
+                            assertThat(partitions).hasSize(2);
+                            // the producer state of the batch reaches the backend
+                            KafkaProduceCommand.IdempotentBatch batch =
+                                    partitions.get(0).idempotentBatch();
+                            assertThat(batch).isNotNull();
+                            assertThat(batch.producerId()).isEqualTo(10L);
+                            assertThat(batch.producerEpoch()).isEqualTo((short) 4);
+                            assertThat(batch.baseSequence()).isEqualTo(7);
+                            assertThat(partitions.get(1).idempotentBatch()).isNull();
                             return successful(command);
                         });
         assertErrors(
-                response,
-                Errors.INVALID_RECORD,
-                Errors.INVALID_REQUEST,
-                Errors.INVALID_REQUEST,
-                Errors.NONE);
+                response, Errors.INVALID_RECORD, Errors.INVALID_REQUEST, Errors.NONE, Errors.NONE);
     }
 
     @Test

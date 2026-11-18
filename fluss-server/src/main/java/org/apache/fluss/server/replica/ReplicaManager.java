@@ -333,7 +333,7 @@ public class ReplicaManager implements ServerReconfigurable {
             @Nullable PluginManager pluginManager)
             throws IOException {
         this.conf = conf;
-        this.clusterFeatures = new FinalizedClusterFeatures(conf);
+        this.clusterFeatures = new FinalizedClusterFeatures(clock);
         this.zkClient = zkClient;
         this.scheduler = scheduler;
         this.localDiskManager = localDiskManager;
@@ -1656,6 +1656,11 @@ public class ReplicaManager implements ServerReconfigurable {
         for (Map.Entry<TableBucket, MemoryLogRecords> entry : entriesPerBucket.entrySet()) {
             TableBucket tb = entry.getKey();
             MemoryLogRecords records = entry.getValue();
+            ApiError unfinalizedFormat = clusterFeatures.checkWrite(records);
+            if (unfinalizedFormat != null) {
+                resultForBucketMap.put(tb, new ProduceLogResultForBucket(tb, unfinalizedFormat));
+                continue;
+            }
             TableMetricGroup tableMetrics = null;
             try {
                 Replica replica = getReplicaOrException(tb);

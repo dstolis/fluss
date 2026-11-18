@@ -35,6 +35,7 @@ import org.apache.fluss.exception.DatabaseAlreadyExistException;
 import org.apache.fluss.exception.DatabaseNotEmptyException;
 import org.apache.fluss.exception.DatabaseNotExistException;
 import org.apache.fluss.exception.InvalidAlterTableException;
+import org.apache.fluss.exception.InvalidClusterFeatureUpdateException;
 import org.apache.fluss.exception.InvalidDatabaseException;
 import org.apache.fluss.exception.InvalidPartitionException;
 import org.apache.fluss.exception.InvalidReplicationFactorException;
@@ -960,6 +961,49 @@ public interface Admin extends AutoCloseable {
      * @since 1.1
      */
     CompletableFuture<ClusterDescription> describeCluster();
+
+    /**
+     * Describe the cluster features asynchronously: for each feature, the level the cluster has
+     * enabled and the level it can be raised to.
+     *
+     * <p>A cluster feature is a capability, such as a new data format, that must only be used once
+     * every server of the cluster supports it. Servers are upgraded first, and the level is raised
+     * afterwards with {@link #updateClusterFeatures(Map, boolean)}.
+     *
+     * <p>This API requires DESCRIBE permission on the cluster resource. Servers that do not support
+     * this API fail with {@link UnsupportedVersionException}.
+     *
+     * @return a {@link CompletableFuture} that completes with the description of every feature.
+     * @since 1.1
+     */
+    CompletableFuture<Collection<ClusterFeatureDescription>> describeClusterFeatures();
+
+    /**
+     * Raise the finalized level of cluster features asynchronously. Either every given feature is
+     * raised, or none is.
+     *
+     * <p>A level can only be raised, and only to a level that every registered coordinator and
+     * tablet server supports. A raise is also rejected while a tablet server that holds replicas is
+     * offline, because its version cannot be checked. A level that was raised cannot be lowered
+     * again, and servers of a version that does not support it can no longer join the cluster.
+     *
+     * <p>With {@code validateOnly}, the change is checked in the same way but not made, which tells
+     * whether the cluster is ready for it.
+     *
+     * <p>This API requires ALTER permission on the cluster resource. The following exceptions can
+     * be anticipated when calling {@code get()} on the returned future:
+     *
+     * <ul>
+     *   <li>{@link InvalidClusterFeatureUpdateException} if a feature is unknown, a level is
+     *       lowered or out of range, or a server blocks the raise. The message names the servers.
+     * </ul>
+     *
+     * @param featureLevels the new finalized level of each feature, keyed by feature name.
+     * @param validateOnly whether to only validate the change.
+     * @since 1.1
+     */
+    CompletableFuture<Void> updateClusterFeatures(
+            Map<String, Integer> featureLevels, boolean validateOnly);
 
     /**
      * List per-bucket remote log manifest entries for a table or partition scope.

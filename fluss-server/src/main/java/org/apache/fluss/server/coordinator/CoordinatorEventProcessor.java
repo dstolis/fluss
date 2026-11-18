@@ -427,8 +427,7 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
         long start4loadTabletServer = System.currentTimeMillis();
         Map<Integer, TabletServerRegistration> tabletServerRegistrations =
                 zooKeeperClient.getTabletServers(currentServers);
-        ClusterFeatureLevels finalizedFeatures =
-                ClusterFeatures.finalizedLevels(conf, zooKeeperClient);
+        ClusterFeatureLevels finalizedFeatures = ClusterFeatures.finalizedLevels(zooKeeperClient);
         for (int server : currentServers) {
             TabletServerRegistration registration = tabletServerRegistrations.get(server);
             if (!supportsFinalizedFeatures(
@@ -1513,7 +1512,7 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
 
     private ClusterFeatureLevels finalizedFeatures() {
         try {
-            return ClusterFeatures.finalizedLevels(conf, zooKeeperClient).max(appliedFeatureLevels);
+            return ClusterFeatures.finalizedLevels(zooKeeperClient).max(appliedFeatureLevels);
         } catch (Exception e) {
             throw new FlussRuntimeException("Failed to read the finalized cluster features.", e);
         }

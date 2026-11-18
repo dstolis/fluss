@@ -17,7 +17,6 @@
 
 package org.apache.fluss.server.tablet;
 
-import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.exception.ApiException;
 import org.apache.fluss.exception.AuthorizationException;
@@ -28,16 +27,13 @@ import org.apache.fluss.exception.ScannerExpiredException;
 import org.apache.fluss.exception.StaleMetadataException;
 import org.apache.fluss.exception.UnknownScannerIdException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
-import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.DefaultValueRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
-import org.apache.fluss.record.LogRecordBatch;
 import org.apache.fluss.record.LogRecordBatchConverter;
-import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.entity.LimitScanResultForBucket;
@@ -108,7 +104,6 @@ import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.FetchLogReadPreference;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
-import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
@@ -282,30 +277,17 @@ public final class TabletService extends RpcServiceBase
     public void shutdown() {}
 
     /**
-     * Advertises only the API versions whose data the cluster has finalized, see {@link
-     * ApiFeatureContracts}. For example, the {@code PRODUCE_LOG} version that may carry log record
-     * batches of magic V3 is only advertised once the cluster allows them. Clients negotiate
-     * versions once per connection, so they see the change after reconnecting.
-     *
-     * <p>The response also lists the cluster features this server supports and the finalized levels
-     * it applies, so clients and tools can see the state of the cluster.
+     * Also reports the finalized level of every cluster feature, as applied on this tablet server.
+     * Writers learn from it when they may use a level, for example write log record batches of
+     * magic V3. Clients ask for the API versions when they open a connection, so they learn a
+     * raised level on their next connection.
      */
     @Override
     public CompletableFuture<ApiVersionsResponse> apiVersions(ApiVersionsRequest request) {
         return super.apiVersions(request)
                 .thenApply(
                         response -> {
-                            ClusterFeatureLevels finalized = finalizedFeatures();
-                            ApiFeatureContracts.capAdvertisedVersions(
-                                    response.getApiVersionsList(), finalized);
-                            for (ClusterFeature feature : ClusterFeature.values()) {
-                                response.addSupportedFeature()
-                                        .setName(feature.featureName())
-                                        .setLevel(feature.latestLevel());
-                                response.addFinalizedFeature()
-                                        .setName(feature.featureName())
-                                        .setLevel(finalized.level(feature));
-                            }
+                            finalizedFeatures().reportIn(response);
                             return response;
                         });
     }
@@ -327,7 +309,6 @@ public final class TabletService extends RpcServiceBase
                 routingErrors);
 
         List<ProduceLogDataForBucket> produceLogData = toProduceLogDataForBuckets(request);
-        collectUnfinalizedFormatErrors(produceLogData, finalizedFeatures(), routingErrors);
         if (!routingErrors.isEmpty()) {
             produceLogData.removeIf(
                     bucketData -> routingErrors.containsKey(bucketData.tableBucket()));
@@ -363,34 +344,6 @@ public final class TabletService extends RpcServiceBase
                     responseCallback);
         }
         return response;
-    }
-
-    /**
-     * Rejects the buckets whose log record batches have a format the cluster has not finalized, so
-     * no replica or reader receives batches it cannot read. Such a bucket is left out of the append
-     * and answered with the error, like a bucket with a routing error.
-     *
-     * <p>The version of the request is not checked. The finalized level is a property of the
-     * cluster, and a writer that learned it from one tablet server also uses the format on
-     * connections that negotiated their versions before the level was finalized.
-     */
-    @VisibleForTesting
-    static void collectUnfinalizedFormatErrors(
-            List<ProduceLogDataForBucket> produceLogData,
-            ClusterFeatureLevels finalized,
-            Map<TableBucket, ProduceLogResultForBucket> errors) {
-        for (ProduceLogDataForBucket bucketData : produceLogData) {
-            TableBucket tb = bucketData.tableBucket();
-            try {
-                for (LogRecordBatch batch : bucketData.records().batches()) {
-                    ApiFeatureContracts.checkWrite(
-                            LOG_RECORD_BATCH_VERSION, batch.magic(), finalized);
-                }
-            } catch (UnsupportedVersionException e) {
-                errors.putIfAbsent(
-                        tb, new ProduceLogResultForBucket(tb, ApiError.fromThrowable(e)));
-            }
-        }
     }
 
     /**
@@ -454,9 +407,8 @@ public final class TabletService extends RpcServiceBase
 
         CompletableFuture<FetchLogResponse> response = new CompletableFuture<>();
         FetchParams fetchParams = getFetchParams(request);
-        short apiVersion = currentSession().getApiVersion();
         // clients get the batches their version cannot read converted, replicas never do
-        int readableLevel = readableBatchLevel(ApiKeys.FETCH_LOG, apiVersion);
+        int readableLevel = readableBatchLevel(ApiKeys.FETCH_LOG, currentSession().getApiVersion());
         if (isFromClient(request.getFollowerServerId())
                 && finalizedFeatures().level(LOG_RECORD_BATCH_VERSION) > readableLevel) {
             fetchParams.convertBatchesAbove((byte) readableLevel);
@@ -467,54 +419,8 @@ public final class TabletService extends RpcServiceBase
                 new UserContext(currentSession().getPrincipal()),
                 fetchResponseMap ->
                         response.complete(
-                                makeFetchLogResponse(
-                                        rejectUnreadableRecordBatches(
-                                                fetchResponseMap, apiVersion, finalizedFeatures()),
-                                        errorResponseMap)));
+                                makeFetchLogResponse(fetchResponseMap, errorResponseMap)));
         return response;
-    }
-
-    /**
-     * Replaces the result of every bucket whose records contain a log record batch the reader's
-     * {@code FETCH_LOG} version cannot read with an {@link Errors#UNSUPPORTED_VERSION} error. A
-     * reader that supports a newer version then reconnects and negotiates it.
-     *
-     * <p>Batches above the reader's level can only exist once the cluster has finalized a higher
-     * level, so the batches are only checked after that.
-     */
-    @VisibleForTesting
-    static Map<TableBucket, FetchLogResultForBucket> rejectUnreadableRecordBatches(
-            Map<TableBucket, FetchLogResultForBucket> fetchResponseMap,
-            short apiVersion,
-            ClusterFeatureLevels finalized) {
-        int readableLevel =
-                ApiFeatureContracts.maxLevel(
-                        ApiKeys.FETCH_LOG, apiVersion, LOG_RECORD_BATCH_VERSION);
-        if (finalized.level(LOG_RECORD_BATCH_VERSION) <= readableLevel) {
-            return fetchResponseMap;
-        }
-        Map<TableBucket, FetchLogResultForBucket> checked = new HashMap<>(fetchResponseMap);
-        for (Map.Entry<TableBucket, FetchLogResultForBucket> entry : checked.entrySet()) {
-            FetchLogResultForBucket result = entry.getValue();
-            if (result.failed() || result.records() == null) {
-                continue;
-            }
-            int batchLevel = highestBatchMagic(result.records());
-            if (!ApiFeatureContracts.canRead(
-                    ApiKeys.FETCH_LOG, apiVersion, LOG_RECORD_BATCH_VERSION, batchLevel)) {
-                entry.setValue(
-                        FetchLogResultForBucket.error(
-                                entry.getKey(),
-                                new ApiError(
-                                        Errors.UNSUPPORTED_VERSION,
-                                        String.format(
-                                                "The log contains record batches of magic v%s, "
-                                                        + "but FETCH_LOG version %s reads "
-                                                        + "record batches up to magic v%s.",
-                                                batchLevel, apiVersion, readableLevel))));
-            }
-        }
-        return checked;
     }
 
     /** The highest log record batch level the given version of a read API can return as stored. */
@@ -535,14 +441,6 @@ public final class TabletService extends RpcServiceBase
         return new LimitScanResultForBucket(
                 result.getTableBucket(),
                 LogRecordBatchConverter.convert(result.getRecords(), (byte) readableLevel));
-    }
-
-    private static int highestBatchMagic(LogRecords records) {
-        int highest = 0;
-        for (LogRecordBatch batch : records.batches()) {
-            highest = Math.max(highest, batch.magic());
-        }
-        return highest;
     }
 
     private ClusterFeatureLevels finalizedFeatures() {

@@ -903,6 +903,26 @@ public final class ZkData {
         }
     }
 
+    /**
+     * The znode for the finalized cluster feature levels. Only the leading coordinator writes it.
+     * The znode path is:
+     *
+     * <p>/cluster/features
+     */
+    public static final class ClusterFeaturesZNode {
+        public static String path() {
+            return "/cluster/features";
+        }
+
+        public static byte[] encode(Map<String, Integer> levels) {
+            return JsonSerdeUtils.writeValueAsBytes(levels, ClusterFeatureLevelsJsonSerde.INSTANCE);
+        }
+
+        public static Map<String, Integer> decode(byte[] json) {
+            return JsonSerdeUtils.readValue(json, ClusterFeatureLevelsJsonSerde.INSTANCE);
+        }
+    }
+
     // ------------------------------------------------------------------------------------------
     // ZNodes under "/producers/"
     // ------------------------------------------------------------------------------------------

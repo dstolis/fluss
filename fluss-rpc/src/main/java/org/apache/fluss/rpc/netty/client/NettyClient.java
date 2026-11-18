@@ -27,6 +27,7 @@ import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.netty.NettyMetrics;
 import org.apache.fluss.rpc.netty.NettyUtils;
 import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.security.auth.AuthenticationFactory;
 import org.apache.fluss.security.auth.ClientAuthenticator;
 import org.apache.fluss.shaded.netty4.io.netty.bootstrap.Bootstrap;
@@ -44,7 +45,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -188,13 +188,16 @@ public final class NettyClient implements RpcClient {
         return connection != null && connection.isReady();
     }
 
-    /** Send an RPC request to the given server and return a future for the response. */
     @Override
-    public Optional<Short> negotiatedApiVersion(ServerNode node, ApiKeys apiKey) {
-        ServerConnection connection = connections.get(ConnectionKey.from(node));
-        return connection == null ? Optional.empty() : connection.negotiatedApiVersion(apiKey);
+    public int finalizedFeatureLevel(ClusterFeature feature) {
+        int level = feature.baselineLevel();
+        for (ServerConnection connection : connections.values()) {
+            level = Math.max(level, connection.finalizedFeatureLevel(feature));
+        }
+        return level;
     }
 
+    /** Send an RPC request to the given server and return a future for the response. */
     @Override
     public CompletableFuture<ApiMessage> sendRequest(
             ServerNode node, ApiKeys apiKey, ApiMessage request) {

@@ -41,6 +41,7 @@ import org.apache.fluss.rpc.netty.NettyUtils;
 import org.apache.fluss.rpc.netty.server.NettyServer;
 import org.apache.fluss.rpc.netty.server.RequestsMetrics;
 import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.shaded.netty4.io.netty.channel.EventLoop;
 import org.apache.fluss.shaded.netty4.io.netty.channel.EventLoopGroup;
 import org.apache.fluss.shaded.netty4.io.netty.resolver.AbstractAddressResolver;
@@ -73,6 +74,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.apache.fluss.utils.NetUtils.getAvailablePort;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -141,6 +143,30 @@ final class NettyClientTest {
                 .isInstanceOf(ExecutionException.class)
                 .hasMessageContaining("The server does not support LOOKUP(1017)")
                 .hasRootCauseMessage("The server does not support LOOKUP(1017)");
+    }
+
+    @Test
+    void testFinalizedFeatureLevelIsLearnedWhenConnecting() throws Exception {
+        ApiVersionsRequest request =
+                new ApiVersionsRequest()
+                        .setClientSoftwareName("testing_client")
+                        .setClientSoftwareVersion("1.0");
+        assertThat(nettyClient.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION)).isEqualTo(2);
+
+        // a server that reports no levels, like one that does not know cluster features
+        nettyClient.sendRequest(serverNode, ApiKeys.API_VERSIONS, request).get();
+        assertThat(nettyClient.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION)).isEqualTo(2);
+
+        // the level is raised, but the client asked for the levels when it connected
+        service.setFinalizedFeatureLevels(
+                ClusterFeatureLevels.baseline().with(LOG_RECORD_BATCH_VERSION, 3));
+        nettyClient.sendRequest(serverNode, ApiKeys.API_VERSIONS, request).get();
+        assertThat(nettyClient.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION)).isEqualTo(2);
+
+        // the client learns the raised level on its next connection
+        nettyClient.disconnect(serverNode).get();
+        nettyClient.sendRequest(serverNode, ApiKeys.API_VERSIONS, request).get();
+        assertThat(nettyClient.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
     }
 
     @Test

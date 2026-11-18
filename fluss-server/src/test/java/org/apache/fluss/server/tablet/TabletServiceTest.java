@@ -30,9 +30,7 @@ import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.record.TestingSchemaGetter;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.encode.ValueDecoder;
-import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
-import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.messages.CommitConsumerOffsetsRequest;
 import org.apache.fluss.rpc.messages.CommitConsumerOffsetsResponse;
 import org.apache.fluss.rpc.messages.FindConsumerGroupOwnerRequest;
@@ -40,12 +38,9 @@ import org.apache.fluss.rpc.messages.PbCommitConsumerOffsetsResponseBucket;
 import org.apache.fluss.rpc.netty.server.Session;
 import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
-import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
-import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.MetadataManager;
-import org.apache.fluss.server.entity.ProduceLogDataForBucket;
 import org.apache.fluss.server.log.FetchParams;
 import org.apache.fluss.server.metadata.BucketMetadata;
 import org.apache.fluss.server.metadata.SystemTables;
@@ -67,16 +62,11 @@ import java.net.InetAddress;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
-import static org.apache.fluss.record.TestData.DATA1;
-import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
-import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsV3;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -88,8 +78,6 @@ class TabletServiceTest extends ReplicaTestBase {
     private static final String GROUP_ID = "worker-commits";
     private static final TableBucket SOURCE_BUCKET = new TableBucket(1L, 0);
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(10);
-    private static final ClusterFeatureLevels V3_FINALIZED =
-            ClusterFeatureLevels.baseline().with(ClusterFeature.LOG_RECORD_BATCH_VERSION, 3);
 
     private LakeCatalogDynamicLoader lakeCatalogLoader;
     private MetadataManager metadataManager;
@@ -391,76 +379,5 @@ class TabletServiceTest extends ReplicaTestBase {
                     assertThat(row.getLong(5)).isEqualTo(expectedOffset);
                     assertThat(row.getString(6).toString()).isEqualTo("offset-" + expectedOffset);
                 });
-    }
-
-    @Test
-    void testFetchLogV0RejectsRecordBatchV3() throws Exception {
-        TableBucket v2Bucket = new TableBucket(1L, 0);
-        TableBucket v3Bucket = new TableBucket(1L, 1);
-        Map<TableBucket, FetchLogResultForBucket> results = new HashMap<>();
-        results.put(
-                v2Bucket,
-                FetchLogResultForBucket.records(
-                        v2Bucket,
-                        genMemoryLogRecordsByObject(LOG_MAGIC_VALUE_V2, DATA1),
-                        10L,
-                        -1L,
-                        -1L));
-        results.put(
-                v3Bucket,
-                FetchLogResultForBucket.records(
-                        v3Bucket,
-                        genMemoryLogRecordsV3(DATA1, 1L, (short) 0, 0, false, 0L),
-                        10L,
-                        -1L,
-                        -1L));
-
-        // a reader that negotiated FETCH_LOG v1 gets every batch as stored
-        assertThat(TabletService.rejectUnreadableRecordBatches(results, (short) 1, V3_FINALIZED))
-                .isSameAs(results);
-        // before V3 is allowed, the batches are not checked
-        assertThat(
-                        TabletService.rejectUnreadableRecordBatches(
-                                results, (short) 0, ClusterFeatureLevels.baseline()))
-                .isSameAs(results);
-
-        Map<TableBucket, FetchLogResultForBucket> checked =
-                TabletService.rejectUnreadableRecordBatches(results, (short) 0, V3_FINALIZED);
-        assertThat(checked.get(v2Bucket)).isSameAs(results.get(v2Bucket));
-        assertThat(checked.get(v3Bucket).failed()).isTrue();
-        assertThat(checked.get(v3Bucket).getErrorCode())
-                .isEqualTo(Errors.UNSUPPORTED_VERSION.code());
-        assertThat(checked.get(v3Bucket).getErrorMessage())
-                .contains("FETCH_LOG version 0 reads record batches up to magic v2");
-    }
-
-    @Test
-    void testProduceRejectsOnlyBucketsWithUnfinalizedFormat() throws Exception {
-        TableBucket v2Bucket = new TableBucket(1L, 0);
-        TableBucket v3Bucket = new TableBucket(1L, 1);
-        List<ProduceLogDataForBucket> produceLogData =
-                Arrays.asList(
-                        new ProduceLogDataForBucket(
-                                v2Bucket,
-                                genMemoryLogRecordsByObject(LOG_MAGIC_VALUE_V2, DATA1),
-                                null),
-                        new ProduceLogDataForBucket(
-                                v3Bucket,
-                                genMemoryLogRecordsV3(DATA1, 1L, (short) 0, 0, false, 0L),
-                                null));
-
-        // once V3 is finalized, every bucket is accepted, whatever the version of the request
-        Map<TableBucket, ProduceLogResultForBucket> errors = new HashMap<>();
-        TabletService.collectUnfinalizedFormatErrors(produceLogData, V3_FINALIZED, errors);
-        assertThat(errors).isEmpty();
-
-        // before that, the V3 bucket is rejected and the other bucket of the request is not
-        TabletService.collectUnfinalizedFormatErrors(
-                produceLogData, ClusterFeatureLevels.baseline(), errors);
-        assertThat(errors).containsOnlyKeys(v3Bucket);
-        assertThat(errors.get(v3Bucket).getErrorCode())
-                .isEqualTo(Errors.UNSUPPORTED_VERSION.code());
-        assertThat(errors.get(v3Bucket).getErrorMessage())
-                .contains("the cluster has finalized level 2");
     }
 }

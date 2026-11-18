@@ -18,19 +18,20 @@
 package org.apache.fluss.server.feature;
 
 import org.apache.fluss.annotation.Internal;
-import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
-/** The cluster features a tablet server registers, see {@link ClusterFeature}. */
+/** The cluster features a server registers and checks, see {@link ClusterFeature}. */
 @Internal
 public final class ClusterFeatures {
 
@@ -46,8 +47,8 @@ public final class ClusterFeatures {
     }
 
     /**
-     * Returns the highest level of the feature in the supported features a tablet server
-     * registered. Servers that registered before the feature existed support its baseline level.
+     * Returns the highest level of the feature in the supported features a server registered.
+     * Servers that registered before the feature existed support its baseline level.
      */
     public static int supportedLevel(
             Map<String, Integer> supportedFeatures, ClusterFeature feature) {
@@ -77,39 +78,32 @@ public final class ClusterFeatures {
     }
 
     /**
-     * Reads the finalized levels as the coordinator sees them: the static config overlaid with the
-     * cluster configs stored in ZooKeeper.
+     * Returns the stored finalized levels that this build does not support: levels above its latest
+     * level, and features it does not know at all. A stored feature is always above its baseline,
+     * so an unknown one cannot be supported. Empty if this build supports all of them.
      */
-    public static ClusterFeatureLevels finalizedLevels(
-            Configuration staticConf, ZooKeeperClient zkClient) throws Exception {
-        Configuration conf = new Configuration(staticConf);
-        conf.addAll(Configuration.fromMap(zkClient.fetchEntityConfig()));
-        return ClusterFeatureLevels.fromConfig(conf);
+    public static List<String> unsupportedByThisBuild(Map<String, Integer> storedLevels) {
+        List<String> unsupported =
+                unsupportedFeatures(
+                        supportedFeatures(), ClusterFeatureLevels.fromMap(storedLevels));
+        for (String unknown : ClusterFeatureLevels.unknownFeatures(storedLevels)) {
+            unsupported.add(
+                    String.format(
+                            "%s (unknown to this version, finalized %s)",
+                            unknown, storedLevels.get(unknown)));
+        }
+        return unsupported;
     }
 
     /**
-     * Fails if the configuration of this server sets the finalized level of a cluster feature. A
-     * level is finalized for the whole cluster through the cluster configs, where the coordinator
-     * checks that every tablet server supports it. A level in the configuration of one server skips
-     * that check: the server would allow data that other servers of the cluster cannot read.
+     * Reads the finalized levels of the cluster from ZooKeeper. Every feature is at its baseline
+     * while the cluster has not stored any levels yet.
      */
-    public static void checkNotInServerConfig(Configuration staticConf) {
-        List<String> keys = new ArrayList<>();
-        for (String key : staticConf.keySet()) {
-            if (key.startsWith(ClusterFeature.CONFIG_PREFIX)) {
-                keys.add(key);
-            }
-        }
-        if (!keys.isEmpty()) {
-            Collections.sort(keys);
-            throw new IllegalConfigurationException(
-                    String.format(
-                            "The cluster feature levels %s must not be set in the server "
-                                    + "configuration. Remove them, and raise a level for the whole "
-                                    + "cluster through the cluster configs instead, which checks "
-                                    + "that every tablet server supports it.",
-                            keys));
-        }
+    public static ClusterFeatureLevels finalizedLevels(ZooKeeperClient zkClient) throws Exception {
+        Optional<VersionedData<Map<String, Integer>>> stored = zkClient.getClusterFeatureLevels();
+        return stored.isPresent()
+                ? ClusterFeatureLevels.fromMap(stored.get().data())
+                : ClusterFeatureLevels.baseline();
     }
 
     /**
@@ -118,15 +112,17 @@ public final class ClusterFeatures {
      * format. The server could not read the data written at that level, so it must not start and
      * join the cluster.
      */
-    public static void checkSupportsFinalizedFeatures(
-            Configuration staticConf, ZooKeeperClient zkClient) throws Exception {
-        List<String> unsupported =
-                unsupportedFeatures(supportedFeatures(), finalizedLevels(staticConf, zkClient));
+    public static void checkSupportsFinalizedFeatures(ZooKeeperClient zkClient) throws Exception {
+        Optional<VersionedData<Map<String, Integer>>> stored = zkClient.getClusterFeatureLevels();
+        if (!stored.isPresent()) {
+            return;
+        }
+        List<String> unsupported = unsupportedByThisBuild(stored.get().data());
         if (!unsupported.isEmpty()) {
             throw new IllegalConfigurationException(
                     String.format(
-                            "This tablet server does not support the finalized cluster features "
-                                    + "%s. Upgrade it to a version that supports them.",
+                            "This server does not support the finalized cluster features %s. "
+                                    + "Upgrade it to a version that supports them.",
                             unsupported));
         }
     }

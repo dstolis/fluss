@@ -20,7 +20,6 @@ package org.apache.fluss.client.write;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.client.metadata.MetadataUpdater;
-import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.exception.AuthorizationException;
 import org.apache.fluss.exception.InvalidMetadataException;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
@@ -30,9 +29,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
-import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
-import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
 import org.apache.fluss.utils.ExceptionUtils;
 
 import org.slf4j.Logger;
@@ -144,8 +141,8 @@ public class IdempotenceManager {
 
     /**
      * Whether new log record batches should be written in magic V3, so they carry the writer epoch.
-     * Only idempotent writers use V3, and only once a tablet server negotiated a {@code
-     * PRODUCE_LOG} version that accepts it.
+     * Only idempotent writers use V3, and only once a tablet server has reported that the cluster
+     * finalized the level that allows it. Levels are never lowered, so the answer stays true.
      */
     boolean writeRecordBatchV3() {
         if (!idempotenceEnabled) {
@@ -157,19 +154,11 @@ public class IdempotenceManager {
         if (metadataUpdater == null) {
             return false;
         }
-        for (ServerNode node : metadataUpdater.getCluster().getAliveTabletServerList()) {
-            Optional<Short> version =
-                    metadataUpdater.negotiatedApiVersion(node, ApiKeys.PRODUCE_LOG);
-            if (version.isPresent()
-                    && ApiFeatureContracts.maxLevel(
-                                    ApiKeys.PRODUCE_LOG, version.get(), LOG_RECORD_BATCH_VERSION)
-                            >= LOG_MAGIC_VALUE_V3) {
-                LOG.info(
-                        "Tablet server {} accepts log record batches of magic V3, writing them from now on.",
-                        node);
-                recordBatchV3Enabled = true;
-                return true;
-            }
+        if (metadataUpdater.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION) >= LOG_MAGIC_VALUE_V3) {
+            LOG.info(
+                    "The cluster allows log record batches of magic V3, writing them from now on.");
+            recordBatchV3Enabled = true;
+            return true;
         }
         return false;
     }

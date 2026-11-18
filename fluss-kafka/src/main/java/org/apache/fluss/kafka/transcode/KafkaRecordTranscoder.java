@@ -18,8 +18,11 @@
 package org.apache.fluss.kafka.transcode;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.IdempotentBatch;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.Record;
 import org.apache.fluss.metadata.TableInfo;
+
+import javax.annotation.Nullable;
 
 import java.util.List;
 
@@ -44,6 +47,25 @@ public interface KafkaRecordTranscoder extends AutoCloseable {
      */
     EncodedRecords transcode(int partitionId, List<Record> records, TableInfo tableInfo)
             throws Exception;
+
+    /**
+     * Transcodes the records an idempotent producer sent for one partition, as {@link
+     * #transcode(int, List, TableInfo)} does. If {@code idempotentBatch} is not null, the result is
+     * a log record batch of magic V3 that carries the producer ID, the producer epoch and the
+     * sequence of its first record, and numbers its records individually.
+     */
+    default EncodedRecords transcode(
+            int partitionId,
+            List<Record> records,
+            TableInfo tableInfo,
+            @Nullable IdempotentBatch idempotentBatch)
+            throws Exception {
+        if (idempotentBatch == null) {
+            return transcode(partitionId, records, tableInfo);
+        }
+        throw new UnsupportedOperationException(
+                "This transcoder does not support idempotent producers.");
+    }
 
     /** Releases resources owned by the transcoder. */
     @Override

@@ -413,9 +413,8 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
     @Test
     void testTabletServerWithoutFinalizedFeaturesIsKeptOut() throws Exception {
         initCoordinatorChannel();
-        zookeeperClient.upsertEntityConfigs(
-                Collections.singletonMap(
-                        ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION.key(), "3"));
+        zookeeperClient.createClusterFeatureLevels(
+                ClusterFeatureLevels.latest().toMap(), ZkVersion.MATCH_ANY_VERSION.getVersion());
         // registrations are ephemeral, closing the client removes them again
         try (ZooKeeperClient client =
                 ZOO_KEEPER_EXTENSION_WRAPPER
@@ -435,7 +434,7 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
             retryVerifyContext(
                     ctx -> assertThat(ctx.liveTabletServerSet()).doesNotContain(oldServerId));
         } finally {
-            zookeeperClient.upsertEntityConfigs(Collections.emptyMap());
+            zookeeperClient.getCuratorClient().delete().forPath(ZkData.ClusterFeaturesZNode.path());
         }
         retryVerifyContext(ctx -> assertThat(ctx.liveTabletServerSet()).doesNotContain(8));
     }
@@ -460,7 +459,7 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
                             assertThat(ctx.liveTabletServerSet())
                                     .contains(oldServerId, newServerId));
 
-            // the coordinator applies level 3 before it is saved in ZooKeeper
+            // the coordinator tells its event thread about every raise
             eventProcessor
                     .getCoordinatorEventManager()
                     .put(
@@ -475,7 +474,8 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
                         assertThat(ctx.liveTabletServerSet()).contains(newServerId);
                     });
 
-            // and an old server registering now is kept out, although ZooKeeper still has level 2
+            // and an old server registering now is kept out, also when the raised level is not
+            // read back from ZooKeeper
             int laterServerId = 9;
             client.registerTabletServer(
                     laterServerId, tabletServerRegistration(laterServerId, Collections.emptyMap()));

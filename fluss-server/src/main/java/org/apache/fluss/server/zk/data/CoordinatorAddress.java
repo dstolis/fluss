@@ -19,8 +19,11 @@ package org.apache.fluss.server.zk.data;
 
 import org.apache.fluss.cluster.Endpoint;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 
 /**
  * The address information of an active coordinator stored in {@link ZkData.CoordinatorLeaderZNode}.
@@ -30,10 +33,18 @@ import java.util.Objects;
 public class CoordinatorAddress {
     private final String id;
     private final List<Endpoint> endpoints;
+    // cluster feature name -> highest level this coordinator supports
+    private final Map<String, Integer> supportedFeatures;
 
     public CoordinatorAddress(String id, List<Endpoint> endpoints) {
+        this(id, endpoints, Collections.emptyMap());
+    }
+
+    public CoordinatorAddress(
+            String id, List<Endpoint> endpoints, Map<String, Integer> supportedFeatures) {
         this.id = id;
         this.endpoints = endpoints;
+        this.supportedFeatures = Collections.unmodifiableMap(new TreeMap<>(supportedFeatures));
     }
 
     public String getId() {
@@ -44,22 +55,41 @@ public class CoordinatorAddress {
         return endpoints;
     }
 
+    /**
+     * The cluster features this coordinator supports, mapped to the highest supported level. It is
+     * empty for coordinators that registered before cluster features existed, which support the
+     * baseline level of every feature.
+     */
+    public Map<String, Integer> getSupportedFeatures() {
+        return supportedFeatures;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
         CoordinatorAddress that = (CoordinatorAddress) o;
-        return Objects.equals(id, that.id) && Objects.equals(endpoints, that.endpoints);
+        return Objects.equals(id, that.id)
+                && Objects.equals(endpoints, that.endpoints)
+                && Objects.equals(supportedFeatures, that.supportedFeatures);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(id, endpoints);
+        return Objects.hash(id, endpoints, supportedFeatures);
     }
 
     @Override
     public String toString() {
-        return "CoordinatorAddress{" + "id='" + id + '\'' + ", endpoints=" + endpoints + '}';
+        return "CoordinatorAddress{"
+                + "id='"
+                + id
+                + '\''
+                + ", endpoints="
+                + endpoints
+                + ", supportedFeatures="
+                + supportedFeatures
+                + '}';
     }
 }

@@ -40,6 +40,8 @@ import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.ApiManager;
 import org.apache.fluss.rpc.protocol.ApiMethod;
 import org.apache.fluss.rpc.protocol.MessageCodec;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.auth.ClientAuthenticator;
 import org.apache.fluss.shaded.netty4.io.netty.bootstrap.Bootstrap;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
@@ -61,7 +63,6 @@ import java.net.InetSocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -107,6 +108,9 @@ final class ServerConnection {
     @GuardedBy("lock")
     private ServerApiVersions serverApiVersions;
 
+    /** The finalized cluster feature levels the remote server reported with its api versions. */
+    private volatile ClusterFeatureLevels finalizedFeatureLevels = ClusterFeatureLevels.baseline();
+
     @GuardedBy("lock")
     private int retryAuthCount = 0;
 
@@ -143,20 +147,11 @@ final class ServerConnection {
     }
 
     /**
-     * Returns the version of the given API that this connection uses for requests, or empty before
-     * the versions are negotiated or when the server does not support the API.
+     * Returns the finalized level of the given cluster feature that the server reported when this
+     * connection was opened, or the baseline level of the feature if it reported none.
      */
-    public Optional<Short> negotiatedApiVersion(ApiKeys apiKey) {
-        synchronized (lock) {
-            if (serverApiVersions == null) {
-                return Optional.empty();
-            }
-            try {
-                return Optional.of(serverApiVersions.highestAvailableVersion(apiKey));
-            } catch (UnsupportedVersionException e) {
-                return Optional.empty();
-            }
-        }
+    public int finalizedFeatureLevel(ClusterFeature feature) {
+        return finalizedFeatureLevels.level(feature);
     }
 
     /** Send an RPC request to the server and return a future for the response. */
@@ -480,8 +475,11 @@ final class ServerConnection {
         }
 
         synchronized (lock) {
-            serverApiVersions =
-                    new ServerApiVersions(((ApiVersionsResponse) response).getApiVersionsList());
+            ApiVersionsResponse apiVersionsResponse = (ApiVersionsResponse) response;
+            serverApiVersions = new ServerApiVersions(apiVersionsResponse.getApiVersionsList());
+            finalizedFeatureLevels =
+                    ClusterFeatureLevels.fromReported(
+                            apiVersionsResponse.getFinalizedFeaturesList());
             // send initial token
             sendInitialToken();
         }

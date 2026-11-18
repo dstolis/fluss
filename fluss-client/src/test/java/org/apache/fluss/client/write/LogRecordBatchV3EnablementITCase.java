@@ -54,7 +54,11 @@ class LogRecordBatchV3EnablementITCase {
 
     @RegisterExtension
     static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
-            FlussClusterExtension.builder().setNumOfTabletServers(3).build();
+            FlussClusterExtension.builder()
+                    .setNumOfTabletServers(3)
+                    // like an upgraded cluster, the test raises the level under a running writer
+                    .setBaselineClusterFeatureLevels(true)
+                    .build();
 
     private static final TablePath TABLE_PATH = TablePath.of("test_db", "v3_enablement_table");
     private static final int BUCKETS = 3;

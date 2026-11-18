@@ -18,24 +18,22 @@
 package org.apache.fluss.rpc.protocol.feature;
 
 import org.apache.fluss.annotation.Internal;
-import org.apache.fluss.config.ConfigOption;
-import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.record.LogRecordBatchFormat;
+
+import javax.annotation.Nullable;
 
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
  * A capability that a cluster turns on once every server supports it, such as a new log record
- * batch format. Each feature has numbered levels. A tablet server registers the highest level it
- * supports, and the cluster config {@code cluster.feature.<name>} holds the finalized level, which
- * the coordinator only raises once every registered tablet server supports it and never lowers.
+ * batch format. Each feature has numbered levels. Every server registers the highest level it
+ * supports, and the cluster has one finalized level per feature, which the coordinator only raises
+ * once every registered server supports it and never lowers.
  *
- * <p>Which API versions may exchange data of which level is declared in {@link
- * ApiFeatureContracts}.
+ * <p>Which data a reader of each API version can decode is declared in {@link ApiFeatureContracts}.
  */
 @Internal
 public enum ClusterFeature {
-
     /**
      * The log record batch format that writers may use. The levels are batch magic values: level 2
      * allows the formats before V3, and level 3 also allows {@link
@@ -43,47 +41,37 @@ public enum ClusterFeature {
      */
     LOG_RECORD_BATCH_VERSION(
             "log.record-batch.version",
-            ConfigOptions.CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION,
             LogRecordBatchFormat.LOG_MAGIC_VALUE_V2,
             LogRecordBatchFormat.LOG_MAGIC_VALUE_V3);
 
-    /** The prefix of the cluster config that holds the finalized level of a feature. */
-    public static final String CONFIG_PREFIX = "cluster.feature.";
-
     private final String featureName;
-    private final ConfigOption<Integer> configOption;
     private final int baselineLevel;
     private final int latestLevel;
 
-    ClusterFeature(
-            String featureName,
-            ConfigOption<Integer> configOption,
-            int baselineLevel,
-            int latestLevel) {
+    ClusterFeature(String featureName, int baselineLevel, int latestLevel) {
         checkArgument(
-                configOption.key().equals(CONFIG_PREFIX + featureName),
-                "The config of cluster feature %s must be %s%s.",
-                featureName,
-                CONFIG_PREFIX,
-                featureName);
-        checkArgument(
-                configOption.defaultValue() == baselineLevel,
-                "The config of cluster feature %s must default to its baseline level.",
+                latestLevel >= baselineLevel,
+                "The latest level of cluster feature %s must not be below its baseline level.",
                 featureName);
         this.featureName = featureName;
-        this.configOption = configOption;
         this.baselineLevel = baselineLevel;
         this.latestLevel = latestLevel;
     }
 
-    /** The name under which tablet servers register the level they support. */
-    public String featureName() {
-        return featureName;
+    /** Returns the feature with the given name, or null if this build does not know it. */
+    @Nullable
+    public static ClusterFeature forName(String featureName) {
+        for (ClusterFeature feature : values()) {
+            if (feature.featureName.equals(featureName)) {
+                return feature;
+            }
+        }
+        return null;
     }
 
-    /** The cluster config that holds the finalized level of this feature. */
-    public ConfigOption<Integer> configOption() {
-        return configOption;
+    /** The name under which servers register the level they support. */
+    public String featureName() {
+        return featureName;
     }
 
     /**

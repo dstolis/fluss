@@ -23,8 +23,8 @@ import org.apache.fluss.rpc.messages.ApiMessage;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.netty.client.NettyClient;
 import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -85,16 +85,16 @@ public interface RpcClient extends AutoCloseable {
     boolean isReady(ServerNode node);
 
     /**
-     * Returns the version of the given API negotiated with the given server, without connecting to
-     * it. It is empty if there is no connection yet, the versions are not negotiated yet, or the
-     * server does not support the API.
+     * Returns the highest finalized level of the given cluster feature that a server this client is
+     * connected to has reported, without connecting to any server. Servers report the levels when a
+     * connection is opened. It is the baseline level of the feature while no connected server has
+     * reported a higher one.
      *
-     * @param node The server node to check
-     * @param apiKey The API to check
-     * @return The negotiated version, if known
+     * @param feature The cluster feature to check
+     * @return The highest reported finalized level
      */
-    default Optional<Short> negotiatedApiVersion(ServerNode node, ApiKeys apiKey) {
-        return Optional.empty();
+    default int finalizedFeatureLevel(ClusterFeature feature) {
+        return feature.baselineLevel();
     }
 
     /**

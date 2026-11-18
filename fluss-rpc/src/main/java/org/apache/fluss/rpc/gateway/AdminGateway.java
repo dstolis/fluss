@@ -43,6 +43,8 @@ import org.apache.fluss.rpc.messages.CreateTableRequest;
 import org.apache.fluss.rpc.messages.CreateTableResponse;
 import org.apache.fluss.rpc.messages.DeleteProducerOffsetsRequest;
 import org.apache.fluss.rpc.messages.DeleteProducerOffsetsResponse;
+import org.apache.fluss.rpc.messages.DescribeClusterFeaturesRequest;
+import org.apache.fluss.rpc.messages.DescribeClusterFeaturesResponse;
 import org.apache.fluss.rpc.messages.DescribeClusterRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterResponse;
 import org.apache.fluss.rpc.messages.DropAclsRequest;
@@ -73,6 +75,8 @@ import org.apache.fluss.rpc.messages.RemoveServerTagByRackRequest;
 import org.apache.fluss.rpc.messages.RemoveServerTagByRackResponse;
 import org.apache.fluss.rpc.messages.RemoveServerTagRequest;
 import org.apache.fluss.rpc.messages.RemoveServerTagResponse;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesRequest;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesResponse;
 import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.RPC;
 
@@ -189,6 +193,22 @@ public interface AdminGateway extends AdminReadOnlyGateway {
 
     @RPC(api = ApiKeys.DESCRIBE_CLUSTER)
     CompletableFuture<DescribeClusterResponse> describeCluster(DescribeClusterRequest request);
+
+    /**
+     * Describes every cluster feature: its finalized level and the highest level that every
+     * registered server supports.
+     */
+    @RPC(api = ApiKeys.DESCRIBE_CLUSTER_FEATURES)
+    CompletableFuture<DescribeClusterFeaturesResponse> describeClusterFeatures(
+            DescribeClusterFeaturesRequest request);
+
+    /**
+     * Raises the finalized level of cluster features, or only validates the change. A level can
+     * only be raised, and only to a level that every registered server supports.
+     */
+    @RPC(api = ApiKeys.UPDATE_CLUSTER_FEATURES)
+    CompletableFuture<UpdateClusterFeaturesResponse> updateClusterFeatures(
+            UpdateClusterFeaturesRequest request);
 
     @RPC(api = ApiKeys.REBALANCE)
     CompletableFuture<RebalanceResponse> rebalance(RebalanceRequest request);

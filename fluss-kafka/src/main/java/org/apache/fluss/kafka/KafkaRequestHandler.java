@@ -20,6 +20,7 @@ package org.apache.fluss.kafka;
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.kafka.api.metadata.MetadataHandler;
 import org.apache.fluss.kafka.api.produce.ProduceHandler;
+import org.apache.fluss.kafka.api.producer.InitProducerIdHandler;
 import org.apache.fluss.kafka.api.sasl.SaslAuthenticateHandler;
 import org.apache.fluss.kafka.api.sasl.SaslHandshakeHandler;
 import org.apache.fluss.kafka.api.versions.ApiVersionsHandler;
@@ -66,6 +67,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                                 new SaslHandshakeHandler(),
                                 new SaslAuthenticateHandler(),
                                 new MetadataHandler(metadataBackend, topicMapper),
+                                new InitProducerIdHandler(produceBackend),
                                 new ProduceHandler(produceBackend)));
         this.dispatcher = new KafkaRequestDispatcher(registry, new KafkaErrorMapper());
     }

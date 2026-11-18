@@ -40,6 +40,7 @@ import org.apache.fluss.exception.IneligibleReplicaException;
 import org.apache.fluss.exception.InsufficientKvLeaderReplicaCapacityException;
 import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidBucketRoutingException;
+import org.apache.fluss.exception.InvalidClusterFeatureUpdateException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
 import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidConsumerGroupIdException;
@@ -324,7 +325,11 @@ public enum Errors {
     INVALID_WRITER_EPOCH_EXCEPTION(
             81,
             "The writer epoch of the batch is lower than the current epoch of the writer.",
-            InvalidWriterEpochException::new);
+            InvalidWriterEpochException::new),
+    INVALID_CLUSTER_FEATURE_UPDATE(
+            82,
+            "The requested change of the cluster feature levels is not valid.",
+            InvalidClusterFeatureUpdateException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 

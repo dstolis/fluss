@@ -99,6 +99,7 @@ import org.apache.fluss.shaded.curator5.org.apache.curator.framework.CuratorFram
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.api.BackgroundCallback;
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.api.CuratorEvent;
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.api.transaction.CuratorOp;
+import org.apache.fluss.shaded.curator5.org.apache.curator.utils.ZKPaths;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.CreateMode;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.data.Stat;
@@ -1658,6 +1659,76 @@ public class ZooKeeperClient implements AutoCloseable {
             handle.ifPresent(h -> result.add(new TableBucketAndManifest(tb, h)));
         }
         return result;
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Cluster features
+    // --------------------------------------------------------------------------------------------
+
+    /**
+     * Reads the finalized cluster feature levels, a map of feature name to level, together with the
+     * ZK version of their znode. It is empty if the znode does not exist yet, which is the case
+     * until the first coordinator of a release with cluster features took leadership.
+     */
+    public Optional<VersionedData<Map<String, Integer>>> getClusterFeatureLevels()
+            throws Exception {
+        Stat stat = new Stat();
+        try {
+            byte[] data =
+                    zkClient.getData()
+                            .storingStatIn(stat)
+                            .forPath(ZkData.ClusterFeaturesZNode.path());
+            return Optional.of(
+                    new VersionedData<>(
+                            ZkData.ClusterFeaturesZNode.decode(data), stat.getVersion()));
+        } catch (KeeperException.NoNodeException e) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Creates the znode of the finalized cluster feature levels. The create is fenced on the
+     * coordinator epoch znode ({@link ZkVersion#MATCH_ANY_VERSION} skips the fence), so a deposed
+     * coordinator fails with {@link KeeperException.BadVersionException}. It fails with {@link
+     * KeeperException.NodeExistsException} if the znode exists.
+     */
+    public void createClusterFeatureLevels(
+            Map<String, Integer> levels, int expectedCoordinatorEpochZkVersion) throws Exception {
+        String path = ZkData.ClusterFeaturesZNode.path();
+        zkClient.createContainers(ZKPaths.getPathAndNode(path).getPath());
+        List<CuratorOp> ops =
+                Collections.singletonList(
+                        zkClient.transactionOp()
+                                .create()
+                                .withMode(CreateMode.PERSISTENT)
+                                .forPath(path, ZkData.ClusterFeaturesZNode.encode(levels)));
+        zkClient.transaction()
+                .forOperations(wrapRequestsWithEpochCheck(ops, expectedCoordinatorEpochZkVersion));
+        LOG.info("Created the finalized cluster feature levels {} in ZooKeeper.", levels);
+    }
+
+    /**
+     * Replaces the finalized cluster feature levels. The write is conditional on the ZK version the
+     * levels were read with, so it fails if they changed since, and fenced on the coordinator epoch
+     * znode, so it fails for a deposed coordinator. Both failures are a {@link
+     * KeeperException.BadVersionException}.
+     */
+    public void updateClusterFeatureLevels(
+            Map<String, Integer> levels,
+            int expectedZkVersion,
+            int expectedCoordinatorEpochZkVersion)
+            throws Exception {
+        List<CuratorOp> ops =
+                Collections.singletonList(
+                        zkClient.transactionOp()
+                                .setData()
+                                .withVersion(expectedZkVersion)
+                                .forPath(
+                                        ZkData.ClusterFeaturesZNode.path(),
+                                        ZkData.ClusterFeaturesZNode.encode(levels)));
+        zkClient.transaction()
+                .forOperations(wrapRequestsWithEpochCheck(ops, expectedCoordinatorEpochZkVersion));
+        LOG.info("Updated the finalized cluster feature levels to {} in ZooKeeper.", levels);
     }
 
     /**

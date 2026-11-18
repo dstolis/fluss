@@ -1079,23 +1079,6 @@ public class ConfigOptions {
     //  ConfigOptions for Log
     // ------------------------------------------------------------------------
 
-    public static final ConfigOption<Integer> CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION =
-            key("cluster.feature.log.record-batch.version")
-                    .intType()
-                    .defaultValue(2)
-                    .withDescription(
-                            "The finalized cluster level of the log record batch format. Level 2 "
-                                    + "allows the formats before V3. Level 3 also allows writers to "
-                                    + "write log record batches of magic V3, which carry a writer epoch "
-                                    + "and can number their records individually. It is changed "
-                                    + "dynamically through the cluster configs: the coordinator only "
-                                    + "accepts a higher level once every registered tablet server "
-                                    + "supports it, and never accepts a lower level, because batches "
-                                    + "written at a higher level cannot be read at a lower one. It "
-                                    + "must not be set in the configuration of a server: a server "
-                                    + "refuses to start with it, because a level set on a single "
-                                    + "server would skip that check.");
-
     public static final ConfigOption<MemorySize> LOG_SEGMENT_FILE_SIZE =
             key("log.segment.file-size")
                     .memoryType()

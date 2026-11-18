@@ -39,6 +39,7 @@ import org.apache.fluss.server.authorizer.AuthorizerLoader;
 import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.feature.ClusterFeatures;
+import org.apache.fluss.server.feature.ClusterFeaturesWatcher;
 import org.apache.fluss.server.kv.KvCloseMode;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.scan.ScannerManager;
@@ -54,6 +55,7 @@ import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.storage.LocalDiskManager;
 import org.apache.fluss.server.tablet.consumer.group.ConsumerOffsetTableConfig;
 import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
 import org.apache.fluss.server.zk.ZooKeeperUtils;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
@@ -156,6 +158,9 @@ public class TabletServer extends ServerBase {
     private ReplicaManager replicaManager;
 
     @GuardedBy("lock")
+    private ClusterFeaturesWatcher clusterFeaturesWatcher;
+
+    @GuardedBy("lock")
     private ScannerManager scannerManager;
 
     @GuardedBy("lock")
@@ -235,7 +240,7 @@ public class TabletServer extends ServerBase {
 
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
             // refuse to start before loading any data written at a level this server can't read
-            ClusterFeatures.checkSupportsFinalizedFeatures(conf, zkClient);
+            ClusterFeatures.checkSupportsFinalizedFeatures(zkClient);
 
             this.lakeCatalogDynamicLoader =
                     new LakeCatalogDynamicLoader(conf, pluginManager, false);
@@ -313,6 +318,17 @@ public class TabletServer extends ServerBase {
                             ioExecutor,
                             localDiskManager,
                             pluginManager);
+            // apply the finalized cluster feature levels before serving, then follow their changes,
+            // and read them again before rejecting a write for a level the watch has not applied
+            // yet
+            replicaManager.getClusterFeatures().apply(ClusterFeatures.finalizedLevels(zkClient));
+            replicaManager
+                    .getClusterFeatures()
+                    .setStoredLevelsReader(
+                            () -> zkClient.getClusterFeatureLevels().map(VersionedData::data));
+            this.clusterFeaturesWatcher =
+                    new ClusterFeaturesWatcher(zkClient, replicaManager.getClusterFeatures(), this);
+            clusterFeaturesWatcher.start();
             replicaManager.startup();
 
             this.tabletService =
@@ -351,8 +367,6 @@ public class TabletServer extends ServerBase {
             dynamicConfigManager.register(replicaManager.getKvSnapshotContext());
             // Register replicaManager to dynamicConfigManager for dynamic config
             dynamicConfigManager.register(replicaManager);
-            // Register the finalized cluster feature levels, which gate new data formats.
-            dynamicConfigManager.register(replicaManager.getClusterFeatures());
             // Register localDiskManager for dynamic disk write-limit and recover ratios.
             dynamicConfigManager.register(localDiskManager);
             rpcServer.getServerReconfigurables().forEach(dynamicConfigManager::register);
@@ -550,6 +564,10 @@ public class TabletServer extends ServerBase {
 
                 if (lakeCatalogDynamicLoader != null) {
                     lakeCatalogDynamicLoader.close();
+                }
+
+                if (clusterFeaturesWatcher != null) {
+                    clusterFeaturesWatcher.close();
                 }
 
                 if (zkClient != null) {

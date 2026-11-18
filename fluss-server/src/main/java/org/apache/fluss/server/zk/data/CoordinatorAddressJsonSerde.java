@@ -26,7 +26,10 @@ import org.apache.fluss.utils.json.JsonSerializer;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 /** Json serializer and deserializer for {@link CoordinatorAddress}. */
 @Internal
@@ -35,12 +38,13 @@ public class CoordinatorAddressJsonSerde
 
     public static final CoordinatorAddressJsonSerde INSTANCE = new CoordinatorAddressJsonSerde();
     private static final String VERSION_KEY = "version";
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
 
     private static final String ID = "id";
     private static final String HOST = "host";
     private static final String PORT = "port";
     private static final String LISTENERS = "listeners";
+    private static final String SUPPORTED_FEATURES = "supported_features";
 
     private static void writeVersion(JsonGenerator generator) throws IOException {
         generator.writeNumberField(VERSION_KEY, VERSION);
@@ -54,6 +58,14 @@ public class CoordinatorAddressJsonSerde
         generator.writeStringField(ID, coordinatorAddress.getId());
         generator.writeStringField(
                 LISTENERS, Endpoint.toListenersString(coordinatorAddress.getEndpoints()));
+        if (!coordinatorAddress.getSupportedFeatures().isEmpty()) {
+            generator.writeObjectFieldStart(SUPPORTED_FEATURES);
+            for (Map.Entry<String, Integer> feature :
+                    coordinatorAddress.getSupportedFeatures().entrySet()) {
+                generator.writeNumberField(feature.getKey(), feature.getValue());
+            }
+            generator.writeEndObject();
+        }
         generator.writeEndObject();
     }
 
@@ -69,6 +81,15 @@ public class CoordinatorAddressJsonSerde
         } else {
             endpoints = Endpoint.fromListenersString(node.get(LISTENERS).asText());
         }
-        return new CoordinatorAddress(id, endpoints);
+        // coordinators that registered before cluster features existed register none
+        Map<String, Integer> supportedFeatures = new HashMap<>();
+        if (node.has(SUPPORTED_FEATURES)) {
+            Iterator<Map.Entry<String, JsonNode>> features = node.get(SUPPORTED_FEATURES).fields();
+            while (features.hasNext()) {
+                Map.Entry<String, JsonNode> feature = features.next();
+                supportedFeatures.put(feature.getKey(), feature.getValue().asInt());
+            }
+        }
+        return new CoordinatorAddress(id, endpoints, supportedFeatures);
     }
 }

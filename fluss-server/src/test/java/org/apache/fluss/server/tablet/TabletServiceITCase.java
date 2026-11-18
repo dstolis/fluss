@@ -155,7 +155,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class TabletServiceITCase {
     @RegisterExtension
     public static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
-            FlussClusterExtension.builder().setNumOfTabletServers(3).build();
+            FlussClusterExtension.builder()
+                    .setNumOfTabletServers(3)
+                    // like an upgraded cluster, which has not enabled V3 log record batches
+                    .setBaselineClusterFeatureLevels(true)
+                    .build();
 
     @Test
     void testFindConsumerGroupOwner() throws Exception {
@@ -1059,7 +1063,7 @@ public class TabletServiceITCase {
     }
 
     @Test
-    void testProduceLogV3NotAdvertisedWhenDisabled() throws Exception {
+    void testApiVersionsReportsFinalizedFeatureLevel() throws Exception {
         ApiVersionsResponse response =
                 FLUSS_CLUSTER_EXTENSION
                         .newTabletServerClientForNode(0)
@@ -1073,21 +1077,17 @@ public class TabletServiceITCase {
                         .filter(version -> version.getApiKey() == ApiKeys.PRODUCE_LOG.id)
                         .findFirst()
                         .get();
-        // clients negotiate version 1 and keep writing the existing formats
-        assertThat(produceLog.getMaxVersion()).isEqualTo((short) 1);
-        // the server reports the level it supports and the level the cluster finalized
-        assertThat(response.getSupportedFeaturesList())
-                .anySatisfy(
-                        feature -> {
-                            assertThat(feature.getName()).isEqualTo("log.record-batch.version");
-                            assertThat(feature.getLevel()).isEqualTo(3);
-                        });
+        // writers learn from the reported level that they keep writing the existing formats
         assertThat(response.getFinalizedFeaturesList())
-                .anySatisfy(
+                .singleElement()
+                .satisfies(
                         feature -> {
                             assertThat(feature.getName()).isEqualTo("log.record-batch.version");
                             assertThat(feature.getLevel()).isEqualTo(2);
                         });
+        // the advertised API versions do not depend on the level
+        assertThat(produceLog.getMaxVersion())
+                .isEqualTo(ApiKeys.PRODUCE_LOG.highestSupportedVersion);
     }
 
     @Test
@@ -1116,7 +1116,7 @@ public class TabletServiceITCase {
         assertThat(bucketResp.getErrorCode()).isEqualTo(Errors.UNSUPPORTED_VERSION.code());
         assertThat(bucketResp.getErrorMessage())
                 .contains("the cluster has finalized level 2")
-                .contains("cluster.feature.log.record-batch.version");
+                .contains("of cluster feature 'log.record-batch.version'");
         assertThat(FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(tb).getLocalLogEndOffset())
                 .isZero();
     }

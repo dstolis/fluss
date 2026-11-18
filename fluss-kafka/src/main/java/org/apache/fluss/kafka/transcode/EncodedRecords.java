@@ -19,7 +19,7 @@ package org.apache.fluss.kafka.transcode;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.record.MemoryLogRecords;
-import org.apache.fluss.server.kv.wal.ArrowWalBuilder;
+import org.apache.fluss.server.kv.wal.WalBuilder;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -38,10 +38,10 @@ import static org.apache.fluss.utils.Preconditions.checkState;
 public final class EncodedRecords implements AutoCloseable {
 
     private final MemoryLogRecords records;
-    private final ArrowWalBuilder builder;
+    private final WalBuilder builder;
     private final AtomicBoolean deallocated = new AtomicBoolean();
 
-    EncodedRecords(MemoryLogRecords records, ArrowWalBuilder builder) {
+    EncodedRecords(MemoryLogRecords records, WalBuilder builder) {
         this.records = records;
         this.builder = builder;
     }

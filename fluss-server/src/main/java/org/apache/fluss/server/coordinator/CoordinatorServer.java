@@ -33,11 +33,11 @@ import org.apache.fluss.server.DynamicConfigManager;
 import org.apache.fluss.server.ServerBase;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.authorizer.AuthorizerLoader;
-import org.apache.fluss.server.coordinator.event.ClusterFeaturesChangedEvent;
 import org.apache.fluss.server.coordinator.lease.KvSnapshotLeaseManager;
 import org.apache.fluss.server.coordinator.rebalance.RebalanceManager;
 import org.apache.fluss.server.coordinator.remote.RemoteDirDynamicLoader;
-import org.apache.fluss.server.feature.ClusterFeatureLevelValidator;
+import org.apache.fluss.server.feature.ClusterFeatureManager;
+import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerMetadataCache;
 import org.apache.fluss.server.metrics.ServerMetricUtils;
@@ -136,7 +136,6 @@ public class CoordinatorServer extends ServerBase {
     private CoordinatorEventProcessor coordinatorEventProcessor;
 
     // checks cluster feature level changes and reports applied changes to the event processor
-    private ClusterFeatureLevelValidator clusterFeatureLevelValidator;
 
     @GuardedBy("lock")
     private ZooKeeperClient zkClient;
@@ -245,6 +244,8 @@ public class CoordinatorServer extends ServerBase {
                             serverId);
 
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
+            // a coordinator that cannot read data of a finalized level must not lead the cluster
+            ClusterFeatures.checkSupportsFinalizedFeatures(zkClient);
 
             // CoordinatorLeaderElection must be created after zkClient is initialized.
             this.coordinatorLeaderElection = new CoordinatorLeaderElection(zkClient, serverId);
@@ -316,8 +317,6 @@ public class CoordinatorServer extends ServerBase {
             // Register stateless validators for coordinator-side upfront validation
             dynamicConfigManager.register(new HistoricalLookupCacheConfigValidator());
             dynamicConfigManager.register(new DiskWriteLimitConfigValidator());
-            this.clusterFeatureLevelValidator = new ClusterFeatureLevelValidator(zkClient, conf);
-            dynamicConfigManager.register(clusterFeatureLevelValidator);
             rpcServer.getServerReconfigurables().forEach(dynamicConfigManager::register);
             dynamicConfigManager.startup();
 
@@ -333,6 +332,8 @@ public class CoordinatorServer extends ServerBase {
         // to avoid split-brain
         ZkEpoch zkEpoch = zkClient.fenceBecomeCoordinatorLeader(serverId);
         registerCoordinatorLeader();
+        // before anything else is created, so a cluster without databases is known to be new
+        new ClusterFeatureManager(zkClient).initialize(zkEpoch.getCoordinatorEpochZkVersion());
 
         synchronized (lock) {
             this.clientMetricGroup = new ClientMetricGroup(metricRegistry, SERVER_NAME);
@@ -378,13 +379,6 @@ public class CoordinatorServer extends ServerBase {
                             clock);
             dynamicConfigManager.registerAndApplyCurrentConfig(
                     coordinatorEventProcessor.getRebalanceManager());
-            // re-check the live tablet servers whenever a cluster feature level changes
-            CoordinatorEventProcessor eventProcessor = coordinatorEventProcessor;
-            clusterFeatureLevelValidator.setLevelChangeListener(
-                    levels ->
-                            eventProcessor
-                                    .getCoordinatorEventManager()
-                                    .put(new ClusterFeaturesChangedEvent(levels)));
             coordinatorEventProcessor.startup();
 
             // As the active leader, this server is the sole writer of dynamic configs and holds the
@@ -510,7 +504,9 @@ public class CoordinatorServer extends ServerBase {
     private CoordinatorAddress buildCoordinatorAddress() {
         List<Endpoint> bindEndpoints = rpcServer.getBindEndpoints();
         return new CoordinatorAddress(
-                this.serverId, Endpoint.loadAdvertisedEndpoints(bindEndpoints, conf));
+                this.serverId,
+                Endpoint.loadAdvertisedEndpoints(bindEndpoints, conf),
+                ClusterFeatures.supportedFeatures());
     }
 
     /**

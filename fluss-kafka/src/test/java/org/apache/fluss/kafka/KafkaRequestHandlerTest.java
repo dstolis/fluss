@@ -168,7 +168,8 @@ public class KafkaRequestHandlerTest extends KafkaServerTestBase {
                 .containsExactly(
                         tuple(ApiKeys.PRODUCE.id, (short) 3, (short) 11),
                         tuple(ApiKeys.METADATA.id, (short) 0, (short) 11),
-                        tuple(ApiKeys.API_VERSIONS.id, (short) 0, (short) 4));
+                        tuple(ApiKeys.API_VERSIONS.id, (short) 0, (short) 4),
+                        tuple(ApiKeys.INIT_PRODUCER_ID.id, (short) 0, (short) 5));
     }
 
     @ParameterizedTest

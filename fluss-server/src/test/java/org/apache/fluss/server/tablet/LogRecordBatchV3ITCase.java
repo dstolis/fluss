@@ -21,7 +21,6 @@ import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.config.cluster.AlterConfigOpType;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
@@ -32,15 +31,13 @@ import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
-import org.apache.fluss.rpc.messages.AlterClusterConfigsRequest;
 import org.apache.fluss.rpc.messages.ApiVersionsRequest;
 import org.apache.fluss.rpc.messages.ApiVersionsResponse;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
-import org.apache.fluss.rpc.messages.PbAlterConfig;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForBucket;
 import org.apache.fluss.rpc.messages.PbProduceLogRespForBucket;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
-import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesRequest;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.server.entity.FetchReqInfo;
@@ -85,6 +82,8 @@ class LogRecordBatchV3ITCase {
             FlussClusterExtension.builder()
                     .setNumOfTabletServers(3)
                     .setClusterConf(clusterConf())
+                    // like an upgraded cluster, the tests raise the level themselves
+                    .setBaselineClusterFeatureLevels(true)
                     .build();
 
     private static final long WRITER_ID = 42L;
@@ -109,10 +108,7 @@ class LogRecordBatchV3ITCase {
                                                                                         .LOG_RECORD_BATCH_VERSION))
                                                         .isEqualTo(3)));
 
-        // versions are negotiated once per connection, so reconnect to see PRODUCE_LOG v2
-        for (ServerNode node : FLUSS_CLUSTER_EXTENSION.getTabletServerNodes()) {
-            FLUSS_CLUSTER_EXTENSION.getRpcClient().disconnect(node).get();
-        }
+        // every tablet server reports the level to the writers that ask for its API versions
         for (int serverId = 0; serverId < 3; serverId++) {
             ApiVersionsResponse versions =
                     FLUSS_CLUSTER_EXTENSION
@@ -122,14 +118,9 @@ class LogRecordBatchV3ITCase {
                                             .setClientSoftwareName("test")
                                             .setClientSoftwareVersion("test"))
                             .get();
-            assertThat(versions.getApiVersionsList())
-                    .anySatisfy(
-                            version -> {
-                                assertThat(version.getApiKey()).isEqualTo(ApiKeys.PRODUCE_LOG.id);
-                                assertThat(version.getMaxVersion()).isEqualTo(2);
-                            });
             assertThat(versions.getFinalizedFeaturesList())
-                    .anySatisfy(
+                    .singleElement()
+                    .satisfies(
                             feature -> {
                                 assertThat(feature.getName()).isEqualTo("log.record-batch.version");
                                 assertThat(feature.getLevel()).isEqualTo(3);
@@ -369,19 +360,10 @@ class LogRecordBatchV3ITCase {
     }
 
     private static void alterFeatureLevel(String level) throws Exception {
-        FLUSS_CLUSTER_EXTENSION
-                .newCoordinatorClient()
-                .alterClusterConfigs(
-                        new AlterClusterConfigsRequest()
-                                .addAllAlterConfigs(
-                                        Collections.singletonList(
-                                                new PbAlterConfig()
-                                                        .setConfigKey(
-                                                                ConfigOptions
-                                                                        .CLUSTER_FEATURE_LOG_RECORD_BATCH_VERSION
-                                                                        .key())
-                                                        .setConfigValue(level)
-                                                        .setOpType(AlterConfigOpType.SET.value()))))
-                .get();
+        UpdateClusterFeaturesRequest request = new UpdateClusterFeaturesRequest();
+        request.addFeature()
+                .setName(ClusterFeature.LOG_RECORD_BATCH_VERSION.featureName())
+                .setLevel(Integer.parseInt(level));
+        FLUSS_CLUSTER_EXTENSION.newCoordinatorClient().updateClusterFeatures(request).get();
     }
 }

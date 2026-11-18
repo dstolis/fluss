@@ -54,6 +54,7 @@ import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH_PK;
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makePutKvResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPutKvDataForBuckets;
 import static org.apache.fluss.testutils.DataTestUtils.compactedRow;
@@ -89,7 +90,7 @@ final class SenderWriterIdRenewalTest {
         tableInfos.put(DATA1_TABLE_PATH_PK, DATA1_TABLE_INFO_PK);
         metadataUpdater = new TestingMetadataUpdater(tableInfos);
         // the cluster allows V3 batches, from when on writers recover from a lost writer state
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 2);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
         idempotenceManager =
                 new IdempotenceManager(
                         true,
@@ -145,7 +146,7 @@ final class SenderWriterIdRenewalTest {
     /** Before the cluster allows V3 batches, a gap fails the batch and resets the writer id. */
     @Test
     void testGapFailsKvBatchBeforeV3IsAllowed() throws Exception {
-        metadataUpdater.setNegotiatedProduceLogVersion((short) 1);
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 2);
         CompletableFuture<Exception> future0 = appendKv(tb1, 1);
         sender.runOnce();
         respond(tb1, 0, written(tb1, 1L));

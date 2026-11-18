@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 
 /** Test for {@link org.apache.fluss.server.zk.data.CoordinatorAddressJsonSerde}. */
 public class CoordinatorAddressJsonSerdeTest extends JsonSerdeTestBase<CoordinatorAddress> {
@@ -43,13 +44,20 @@ public class CoordinatorAddressJsonSerdeTest extends JsonSerdeTestBase<Coordinat
                         Arrays.asList(
                                 new Endpoint("localhost", 1001, "CLIENT"),
                                 new Endpoint("127.0.0.1", 9124, "FLUSS")));
-        return new CoordinatorAddress[] {coordinatorAddress};
+        CoordinatorAddress withSupportedFeatures =
+                new CoordinatorAddress(
+                        "2",
+                        Arrays.asList(new Endpoint("localhost", 1002, "CLIENT")),
+                        Collections.singletonMap("log.record-batch.version", 3));
+        return new CoordinatorAddress[] {coordinatorAddress, withSupportedFeatures};
     }
 
     @Override
     protected String[] expectedJsons() {
         return new String[] {
-            "{\"version\":2,\"id\":\"1\",\"listeners\":\"CLIENT://localhost:1001,FLUSS://127.0.0.1:9124\"}"
+            "{\"version\":3,\"id\":\"1\",\"listeners\":\"CLIENT://localhost:1001,FLUSS://127.0.0.1:9124\"}",
+            "{\"version\":3,\"id\":\"2\",\"listeners\":\"CLIENT://localhost:1002\","
+                    + "\"supported_features\":{\"log.record-batch.version\":3}}"
         };
     }
 
@@ -67,5 +75,15 @@ public class CoordinatorAddressJsonSerdeTest extends JsonSerdeTestBase<Coordinat
                 new CoordinatorAddress(
                         "1", Endpoint.fromListenersString("CLIENT://localhost:1001"));
         assertEquals(coordinatorAddress, expectedCoordinator);
+
+        // version 2 registered no cluster features, which means the baseline of every feature
+        JsonNode jsonInVersion2 =
+                new ObjectMapper()
+                        .readTree(
+                                "{\"version\":2,\"id\":\"1\",\"listeners\":\"CLIENT://localhost:1001\"}"
+                                        .getBytes(StandardCharsets.UTF_8));
+        assertEquals(
+                CoordinatorAddressJsonSerde.INSTANCE.deserialize(jsonInVersion2),
+                expectedCoordinator);
     }
 }

@@ -26,8 +26,9 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Without V3 writes, batches carry no writer epoch, so a writer whose state the server expired
- * fails with {@link OutOfOrderSequenceException}, as before this change.
+ * Without V3 writes, on a cluster upgraded from a version without cluster features, so at the
+ * baseline levels, batches carry no writer epoch, so a writer whose state the server expired fails
+ * with {@link OutOfOrderSequenceException}, as before this change.
  */
 class WriterStateExpirationWithoutV3ITCase extends WriterStateExpirationITCaseBase {
 
@@ -36,6 +37,7 @@ class WriterStateExpirationWithoutV3ITCase extends WriterStateExpirationITCaseBa
             FlussClusterExtension.builder()
                     .setNumOfTabletServers(3)
                     .setClusterConf(clusterConf())
+                    .setBaselineClusterFeatureLevels(true)
                     .build();
 
     @Override
