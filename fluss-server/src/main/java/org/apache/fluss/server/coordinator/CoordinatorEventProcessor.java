@@ -65,6 +65,7 @@ import org.apache.fluss.rpc.messages.RemoveServerTagByRackResponse;
 import org.apache.fluss.rpc.messages.RemoveServerTagResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.coordinator.event.AccessContextEvent;
 import org.apache.fluss.server.coordinator.event.AddServerTagByRackEvent;
 import org.apache.fluss.server.coordinator.event.AddServerTagEvent;
@@ -1553,7 +1554,7 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
      */
     private static boolean supportsFinalizedFeatures(
             int tabletServerId,
-            Map<String, Integer> supportedFeatures,
+            Map<String, SupportedLevelRange> supportedFeatures,
             ClusterFeatureLevels finalizedFeatures) {
         List<String> unsupported =
                 ClusterFeatures.unsupportedFeatures(supportedFeatures, finalizedFeatures);

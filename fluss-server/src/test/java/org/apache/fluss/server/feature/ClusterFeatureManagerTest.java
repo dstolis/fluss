@@ -22,6 +22,7 @@ import org.apache.fluss.exception.InvalidClusterFeatureUpdateException;
 import org.apache.fluss.exception.NotCoordinatorLeaderException;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.metadata.TabletServerResource;
 import org.apache.fluss.server.zk.NOPErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
@@ -53,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ClusterFeatureManagerTest {
 
     private static final String FEATURE = LOG_RECORD_BATCH_VERSION.featureName();
-    private static final Map<String, Integer> NO_FEATURES = Collections.emptyMap();
+    private static final Map<String, SupportedLevelRange> NO_FEATURES = Collections.emptyMap();
 
     @RegisterExtension
     static final AllCallbackWrapper<ZooKeeperExtension> ZOO_KEEPER_EXTENSION_WRAPPER =
@@ -127,13 +128,15 @@ class ClusterFeatureManagerTest {
         assertThat(manager.supportedLevels(admitted).level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
 
         assertThat(
-                        manager.update(level(3), false, epochZkVersion, admitted)
+                        manager.update(level(3), false, null, epochZkVersion, admitted)
+                                .levels()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
         assertThat(manager.finalizedLevels().level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
         // raising to the finalized level again changes nothing
         assertThat(
-                        manager.update(level(3), false, epochZkVersion, admitted)
+                        manager.update(level(3), false, null, epochZkVersion, admitted)
+                                .levels()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
     }
@@ -145,14 +148,15 @@ class ClusterFeatureManagerTest {
         ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
 
         assertThat(
-                        manager.update(level(3), true, epochZkVersion, admitted)
+                        manager.update(level(3), true, null, epochZkVersion, admitted)
+                                .levels()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
         assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
 
         // and it reports the same rejection as the raise itself
         registerTabletServer(1, NO_FEATURES);
-        assertThatThrownBy(() -> manager.update(level(3), true, epochZkVersion, admitted))
+        assertThatThrownBy(() -> manager.update(level(3), true, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("[tablet server 1] do not support it");
     }
@@ -166,7 +170,7 @@ class ClusterFeatureManagerTest {
         ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
         assertThat(manager.supportedLevels(admitted).level(LOG_RECORD_BATCH_VERSION)).isEqualTo(2);
 
-        assertThatThrownBy(() -> manager.update(level(3), false, epochZkVersion, admitted))
+        assertThatThrownBy(() -> manager.update(level(3), false, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("[tablet server 1] do not support it");
         assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
@@ -181,7 +185,7 @@ class ClusterFeatureManagerTest {
         registerCoordinator("c1", NO_FEATURES);
         ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
 
-        assertThatThrownBy(() -> manager.update(level(3), false, epochZkVersion, admitted))
+        assertThatThrownBy(() -> manager.update(level(3), false, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("[coordinator c1] do not support it");
         assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
@@ -196,13 +200,14 @@ class ClusterFeatureManagerTest {
                 1L, TableAssignment.builder().add(0, BucketAssignment.of(0, 5)).build());
         ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
 
-        assertThatThrownBy(() -> manager.update(level(3), false, epochZkVersion, admitted))
+        assertThatThrownBy(() -> manager.update(level(3), false, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("tablet servers [5] hold replicas but are offline");
 
         registerTabletServer(5, ClusterFeatures.supportedFeatures());
         assertThat(
-                        manager.update(level(3), false, epochZkVersion, admitted)
+                        manager.update(level(3), false, null, epochZkVersion, admitted)
+                                .levels()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
     }
@@ -221,7 +226,8 @@ class ClusterFeatureManagerTest {
         // it serves no data, so like a broker whose registration Kafka refused, it does not count
         assertThat(manager.supportedLevels(admitted).level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
         assertThat(
-                        manager.update(level(3), false, epochZkVersion, admitted)
+                        manager.update(level(3), false, null, epochZkVersion, admitted)
+                                .levels()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
 
@@ -231,27 +237,77 @@ class ClusterFeatureManagerTest {
     }
 
     @Test
+    void testFeatureEpochGoesUpWithEveryRaise() throws Exception {
+        int epochZkVersion = startUpgradedCluster();
+        registerTabletServer(0, ClusterFeatures.supportedFeatures());
+        ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
+        assertThat(manager.finalizedState().epoch()).isEqualTo(0);
+
+        // validating does not change the epoch
+        assertThat(manager.update(level(3), true, 0, epochZkVersion, admitted).epoch())
+                .isEqualTo(0);
+        assertThat(manager.update(level(3), false, 0, epochZkVersion, admitted).epoch())
+                .isEqualTo(1);
+        assertThat(manager.finalizedState().epoch()).isEqualTo(1);
+        // a raise to the levels the cluster already has changes nothing
+        assertThat(manager.update(level(3), false, null, epochZkVersion, admitted).epoch())
+                .isEqualTo(1);
+    }
+
+    @Test
+    void testRaiseRejectedWhenTheFeatureEpochChanged() throws Exception {
+        int epochZkVersion = startUpgradedCluster();
+        registerTabletServer(0, ClusterFeatures.supportedFeatures());
+        ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
+        int describedEpoch = manager.finalizedState().epoch();
+        // the stored levels are written again after the operator described them
+        zkClient.updateClusterFeatureLevels(Collections.emptyMap(), describedEpoch, epochZkVersion);
+
+        assertThatThrownBy(
+                        () ->
+                                manager.update(
+                                        level(3), true, describedEpoch, epochZkVersion, admitted))
+                .isInstanceOf(InvalidClusterFeatureUpdateException.class)
+                .hasMessageContaining("the feature epoch is 1, not the expected 0");
+        assertThatThrownBy(
+                        () ->
+                                manager.update(
+                                        level(3), false, describedEpoch, epochZkVersion, admitted))
+                .isInstanceOf(InvalidClusterFeatureUpdateException.class);
+        assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
+
+        // after describing again, the raise goes through
+        int currentEpoch = manager.finalizedState().epoch();
+        assertThat(manager.update(level(3), false, currentEpoch, epochZkVersion, admitted).epoch())
+                .isEqualTo(currentEpoch + 1);
+        // and a retry with the old epoch succeeds, because the cluster already has those levels
+        assertThat(manager.update(level(3), false, currentEpoch, epochZkVersion, admitted).epoch())
+                .isEqualTo(currentEpoch + 1);
+    }
+
+    @Test
     void testInvalidUpdatesAreRejected() throws Exception {
         int epochZkVersion = startUpgradedCluster();
         registerTabletServer(0, ClusterFeatures.supportedFeatures());
         ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
 
-        assertThatThrownBy(() -> manager.update(level(4), false, epochZkVersion, admitted))
+        assertThatThrownBy(() -> manager.update(level(4), false, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
-                .hasMessageContaining("supports levels 2 to 3");
+                .hasMessageContaining("supports levels [2, 3]");
         assertThatThrownBy(
                         () ->
                                 manager.update(
                                         Collections.singletonMap("no.such-feature", 1),
                                         false,
+                                        null,
                                         epochZkVersion,
                                         admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("Unknown cluster feature 'no.such-feature'");
 
         // a level is never lowered
-        manager.update(level(3), false, epochZkVersion, admitted);
-        assertThatThrownBy(() -> manager.update(level(2), false, epochZkVersion, admitted))
+        manager.update(level(3), false, null, epochZkVersion, admitted);
+        assertThatThrownBy(() -> manager.update(level(2), false, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("Cannot lower cluster feature");
         assertThat(manager.finalizedLevels().level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
@@ -265,7 +321,8 @@ class ClusterFeatureManagerTest {
         // another coordinator takes leadership
         becomeLeader();
 
-        assertThatThrownBy(() -> manager.update(level(3), false, staleEpochZkVersion, admitted))
+        assertThatThrownBy(
+                        () -> manager.update(level(3), false, null, staleEpochZkVersion, admitted))
                 .isInstanceOf(NotCoordinatorLeaderException.class);
         assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
     }
@@ -303,8 +360,8 @@ class ClusterFeatureManagerTest {
         return Collections.singletonMap(FEATURE, level);
     }
 
-    private static void registerCoordinator(String id, Map<String, Integer> supportedFeatures)
-            throws Exception {
+    private static void registerCoordinator(
+            String id, Map<String, SupportedLevelRange> supportedFeatures) throws Exception {
         zkClient.registerCoordinatorServer(
                 new CoordinatorAddress(
                         id,
@@ -313,15 +370,15 @@ class ClusterFeatureManagerTest {
     }
 
     /** Registers a tablet server that the coordinator admitted. */
-    private void registerTabletServer(int serverId, Map<String, Integer> supportedFeatures)
-            throws Exception {
+    private void registerTabletServer(
+            int serverId, Map<String, SupportedLevelRange> supportedFeatures) throws Exception {
         registerKeptOutTabletServer(serverId, supportedFeatures);
         admitted.add(serverId);
     }
 
     /** Registers a tablet server that the coordinator did not admit. */
     private static void registerKeptOutTabletServer(
-            int serverId, Map<String, Integer> supportedFeatures) throws Exception {
+            int serverId, Map<String, SupportedLevelRange> supportedFeatures) throws Exception {
         zkClient.registerTabletServer(
                 serverId,
                 new TabletServerRegistration(

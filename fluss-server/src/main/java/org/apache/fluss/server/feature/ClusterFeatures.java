@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
 
@@ -37,37 +38,37 @@ public final class ClusterFeatures {
 
     private ClusterFeatures() {}
 
-    /** The features this server supports, mapped to the highest supported level. */
-    public static Map<String, Integer> supportedFeatures() {
-        Map<String, Integer> supported = new HashMap<>();
+    /** The features this server supports, mapped to the range of supported levels. */
+    public static Map<String, SupportedLevelRange> supportedFeatures() {
+        Map<String, SupportedLevelRange> supported = new HashMap<>();
         for (ClusterFeature feature : ClusterFeature.values()) {
-            supported.put(feature.featureName(), feature.latestLevel());
+            supported.put(feature.featureName(), feature.supportedRange());
         }
         return Collections.unmodifiableMap(supported);
     }
 
     /**
-     * Returns the highest level of the feature in the supported features a server registered.
-     * Servers that registered before the feature existed support its baseline level.
+     * Returns the levels of the feature in the supported features a server registered. Servers that
+     * registered before the feature existed support only its baseline level.
      */
-    public static int supportedLevel(
-            Map<String, Integer> supportedFeatures, ClusterFeature feature) {
-        Integer level = supportedFeatures.get(feature.featureName());
-        return level != null ? level : feature.baselineLevel();
+    public static SupportedLevelRange supportedRange(
+            Map<String, SupportedLevelRange> supportedFeatures, ClusterFeature feature) {
+        SupportedLevelRange range = supportedFeatures.get(feature.featureName());
+        return range != null ? range : feature.baselineRange();
     }
 
     /**
-     * Returns the features whose finalized level the registered supported features are below,
-     * described as {@code name (supports x, finalized y)}. Empty if the server supports every
-     * finalized level.
+     * Returns the features whose finalized level is outside the range the server registered,
+     * described as {@code name (supports [min, max], finalized y)}. Empty if the server supports
+     * every finalized level.
      */
     public static List<String> unsupportedFeatures(
-            Map<String, Integer> supportedFeatures, ClusterFeatureLevels finalized) {
+            Map<String, SupportedLevelRange> supportedFeatures, ClusterFeatureLevels finalized) {
         List<String> unsupported = new ArrayList<>();
         for (ClusterFeature feature : ClusterFeature.values()) {
-            int supported = supportedLevel(supportedFeatures, feature);
+            SupportedLevelRange supported = supportedRange(supportedFeatures, feature);
             int level = finalized.level(feature);
-            if (supported < level) {
+            if (!supported.contains(level)) {
                 unsupported.add(
                         String.format(
                                 "%s (supports %s, finalized %s)",
@@ -78,9 +79,9 @@ public final class ClusterFeatures {
     }
 
     /**
-     * Returns the stored finalized levels that this build does not support: levels above its latest
-     * level, and features it does not know at all. A stored feature is always above its baseline,
-     * so an unknown one cannot be supported. Empty if this build supports all of them.
+     * Returns the stored finalized levels that this build does not support: levels outside its
+     * supported range, and features it does not know at all. A stored feature is always above its
+     * baseline, so an unknown one cannot be supported. Empty if this build supports all of them.
      */
     public static List<String> unsupportedByThisBuild(Map<String, Integer> storedLevels) {
         List<String> unsupported =

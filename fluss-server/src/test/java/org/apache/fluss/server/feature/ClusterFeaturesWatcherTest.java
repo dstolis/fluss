@@ -97,7 +97,8 @@ class ClusterFeaturesWatcherTest {
                     version + 2,
                     ANY_COORDINATOR);
             assertThat(fatalError.get(1, TimeUnit.MINUTES))
-                    .hasMessageContaining("log.record-batch.version (supports 3, finalized 4)");
+                    .hasMessageContaining(
+                            "log.record-batch.version (supports [2, 3], finalized 4)");
             assertThat(features.levels()).isEqualTo(ClusterFeatureLevels.latest());
         }
     }

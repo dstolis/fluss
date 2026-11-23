@@ -18,6 +18,7 @@
 package org.apache.fluss.server.zk.data;
 
 import org.apache.fluss.cluster.Endpoint;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.metadata.TabletServerResource;
 
 import javax.annotation.Nullable;
@@ -37,8 +38,8 @@ public class TabletServerRegistration {
     private final List<Endpoint> endpoints;
     private final long registerTimestamp;
     private final TabletServerResource resource;
-    // the cluster features this server supports, mapped to the highest supported level
-    private final Map<String, Integer> supportedFeatures;
+    // the cluster features this server supports, mapped to the range of supported levels
+    private final Map<String, SupportedLevelRange> supportedFeatures;
 
     public TabletServerRegistration(
             @Nullable String rack, List<Endpoint> endpoints, long registerTimestamp) {
@@ -58,7 +59,7 @@ public class TabletServerRegistration {
             List<Endpoint> endpoints,
             long registerTimestamp,
             TabletServerResource resource,
-            Map<String, Integer> supportedFeatures) {
+            Map<String, SupportedLevelRange> supportedFeatures) {
         this.rack = rack;
         this.endpoints = endpoints;
         this.registerTimestamp = registerTimestamp;
@@ -83,10 +84,10 @@ public class TabletServerRegistration {
     }
 
     /**
-     * The cluster features this server supports, mapped to the highest supported level. Empty for
+     * The cluster features this server supports, mapped to the range of supported levels. Empty for
      * servers that registered before cluster features existed.
      */
-    public Map<String, Integer> getSupportedFeatures() {
+    public Map<String, SupportedLevelRange> getSupportedFeatures() {
         return supportedFeatures;
     }
 

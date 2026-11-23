@@ -22,6 +22,7 @@ import org.apache.fluss.exception.InvalidClusterFeatureUpdateException;
 import org.apache.fluss.exception.NotCoordinatorLeaderException;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
@@ -29,6 +30,8 @@ import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -47,6 +50,10 @@ import java.util.TreeMap;
  * Every write is fenced on the coordinator epoch, so a coordinator that lost leadership cannot
  * write, and a raise is conditional on the version of the node it was validated against, so it
  * cannot overwrite a newer state. Together this keeps a level from ever going down.
+ *
+ * <p>The version of that node is the feature epoch: it goes up by one with every raise, and never
+ * otherwise. An operator can pass the epoch they described to a raise, which is then rejected if
+ * another raise happened in between.
  *
  * <p>Like a Kafka controller, which only counts the brokers whose registration it accepted, it only
  * counts the tablet servers the coordinator has admitted to the live tablet servers. A server that
@@ -103,6 +110,12 @@ public class ClusterFeatureManager {
         return ClusterFeatures.finalizedLevels(zkClient);
     }
 
+    /** The finalized level of every feature, with the feature epoch they were read at. */
+    public FinalizedState finalizedState() throws Exception {
+        VersionedData<Map<String, Integer>> stored = storedLevels();
+        return new FinalizedState(ClusterFeatureLevels.fromMap(stored.data()), stored.zkVersion());
+    }
+
     /**
      * The highest level of every feature that this coordinator, every registered coordinator and
      * every admitted tablet server support, which is the level the feature can be raised to right
@@ -113,9 +126,10 @@ public class ClusterFeatureManager {
     public ClusterFeatureLevels supportedLevels(Set<Integer> admittedTabletServers)
             throws Exception {
         ClusterFeatureLevels supported = ClusterFeatureLevels.latest();
-        for (Map<String, Integer> serverFeatures : serverFeatures(admittedTabletServers).values()) {
+        for (Map<String, SupportedLevelRange> serverFeatures :
+                serverFeatures(admittedTabletServers).values()) {
             for (ClusterFeature feature : ClusterFeature.values()) {
-                int level = ClusterFeatures.supportedLevel(serverFeatures, feature);
+                int level = ClusterFeatures.supportedRange(serverFeatures, feature).max();
                 if (level < supported.level(feature)) {
                     supported = supported.with(feature, level);
                 }
@@ -126,27 +140,31 @@ public class ClusterFeatureManager {
 
     /**
      * Raises the finalized level of the given features, all of them or none, and returns the
-     * resulting levels. With {@code validateOnly}, the change is validated but not made.
+     * resulting levels and epoch. With {@code validateOnly}, the change is validated but not made.
      *
+     * <p>A raise to the levels the cluster already has succeeds whatever the expected epoch, so a
+     * client can safely retry a raise whose response it did not receive.
+     *
+     * @param expectedEpoch the feature epoch the caller expects, or null to raise whatever the
+     *     current epoch is
      * @param admittedTabletServers the tablet servers the coordinator has admitted
      * @throws InvalidClusterFeatureUpdateException if a feature is unknown, a level is lowered or
-     *     out of range, a tablet server that holds replicas is offline, or a registered coordinator
-     *     or admitted tablet server does not support a level
+     *     out of range, the feature epoch is not the expected one, a tablet server that holds
+     *     replicas is offline, or a registered coordinator or admitted tablet server does not
+     *     support a level
      * @throws NotCoordinatorLeaderException if this coordinator lost leadership, in which case
      *     nothing was changed
      */
-    public ClusterFeatureLevels update(
+    public FinalizedState update(
             Map<String, Integer> requestedLevels,
             boolean validateOnly,
+            @Nullable Integer expectedEpoch,
             int coordinatorEpochZkVersion,
             Set<Integer> admittedTabletServers)
             throws Exception {
-        Optional<VersionedData<Map<String, Integer>>> stored = zkClient.getClusterFeatureLevels();
-        if (!stored.isPresent()) {
-            throw new NotCoordinatorLeaderException(
-                    "The cluster feature levels are not initialized yet, retry later.");
-        }
-        ClusterFeatureLevels current = ClusterFeatureLevels.fromMap(stored.get().data());
+        VersionedData<Map<String, Integer>> stored = storedLevels();
+        int epoch = stored.zkVersion();
+        ClusterFeatureLevels current = ClusterFeatureLevels.fromMap(stored.data());
         ClusterFeatureLevels updated = current;
         for (Map.Entry<String, Integer> requested : requestedLevels.entrySet()) {
             ClusterFeature feature = ClusterFeature.forName(requested.getKey());
@@ -169,32 +187,50 @@ public class ClusterFeatureManager {
                 throw new InvalidClusterFeatureUpdateException(
                         String.format(
                                 "Invalid level %s for cluster feature '%s', this coordinator "
-                                        + "supports levels %s to %s.",
-                                level,
-                                feature.featureName(),
-                                feature.baselineLevel(),
-                                feature.latestLevel()));
+                                        + "supports levels %s.",
+                                level, feature.featureName(), feature.supportedRange()));
             }
             updated = updated.with(feature, level);
         }
         if (updated.equals(current)) {
-            return current;
+            return new FinalizedState(current, epoch);
+        }
+        if (expectedEpoch != null && expectedEpoch != epoch) {
+            throw new InvalidClusterFeatureUpdateException(
+                    String.format(
+                            "Cannot raise the cluster feature levels to %s, because the feature "
+                                    + "epoch is %s, not the expected %s: the levels changed to %s "
+                                    + "since. Describe them again and retry.",
+                            updated, epoch, expectedEpoch, current));
         }
 
         checkEveryServerSupports(current, updated, admittedTabletServers);
         if (validateOnly) {
-            return updated;
+            return new FinalizedState(updated, epoch);
         }
         try {
-            zkClient.updateClusterFeatureLevels(
-                    updated.toMap(), stored.get().zkVersion(), coordinatorEpochZkVersion);
+            zkClient.updateClusterFeatureLevels(updated.toMap(), epoch, coordinatorEpochZkVersion);
         } catch (KeeperException.BadVersionException e) {
             throw new NotCoordinatorLeaderException(
                     "The cluster feature levels were not changed, because this coordinator is no "
                             + "longer the leader. Retry with the leading coordinator.");
         }
-        LOG.info("Raised the finalized cluster feature levels from {} to {}.", current, updated);
-        return updated;
+        LOG.info(
+                "Raised the finalized cluster feature levels from {} to {}, feature epoch {}.",
+                current,
+                updated,
+                epoch + 1);
+        // a successful conditional write moves the node to the next version
+        return new FinalizedState(updated, epoch + 1);
+    }
+
+    private VersionedData<Map<String, Integer>> storedLevels() throws Exception {
+        Optional<VersionedData<Map<String, Integer>>> stored = zkClient.getClusterFeatureLevels();
+        if (!stored.isPresent()) {
+            throw new NotCoordinatorLeaderException(
+                    "The cluster feature levels are not initialized yet, retry later.");
+        }
+        return stored.get();
     }
 
     private void checkEveryServerSupports(
@@ -225,7 +261,8 @@ public class ClusterFeatureManager {
                             updated, offline));
         }
 
-        Map<String, Map<String, Integer>> serverFeatures = serverFeatures(admittedTabletServers);
+        Map<String, Map<String, SupportedLevelRange>> serverFeatures =
+                serverFeatures(admittedTabletServers);
         for (ClusterFeature feature : ClusterFeature.values()) {
             int level = updated.level(feature);
             if (level == current.level(feature)) {
@@ -234,7 +271,7 @@ public class ClusterFeatureManager {
             List<String> unsupported = new ArrayList<>();
             serverFeatures.forEach(
                     (server, features) -> {
-                        if (ClusterFeatures.supportedLevel(features, feature) < level) {
+                        if (!ClusterFeatures.supportedRange(features, feature).contains(level)) {
                             unsupported.add(server);
                         }
                     });
@@ -253,9 +290,9 @@ public class ClusterFeatureManager {
      * The supported features of every admitted tablet server and registered coordinator, keyed by a
      * name for messages.
      */
-    private Map<String, Map<String, Integer>> serverFeatures(Set<Integer> admittedTabletServers)
-            throws Exception {
-        Map<String, Map<String, Integer>> serverFeatures = new TreeMap<>();
+    private Map<String, Map<String, SupportedLevelRange>> serverFeatures(
+            Set<Integer> admittedTabletServers) throws Exception {
+        Map<String, Map<String, SupportedLevelRange>> serverFeatures = new TreeMap<>();
         int[] admitted = admittedTabletServers.stream().mapToInt(Integer::intValue).toArray();
         zkClient.getTabletServers(admitted)
                 .forEach(
@@ -269,5 +306,27 @@ public class ClusterFeatureManager {
                     "coordinator " + coordinator.getId(), coordinator.getSupportedFeatures());
         }
         return serverFeatures;
+    }
+
+    /** The finalized level of every feature, with the feature epoch of the stored levels. */
+    public static final class FinalizedState {
+
+        private final ClusterFeatureLevels levels;
+        private final int epoch;
+
+        public FinalizedState(ClusterFeatureLevels levels, int epoch) {
+            this.levels = levels;
+            this.epoch = epoch;
+        }
+
+        /** The finalized levels. */
+        public ClusterFeatureLevels levels() {
+            return levels;
+        }
+
+        /** The feature epoch, which goes up by one with every raise. */
+        public int epoch() {
+            return epoch;
+        }
     }
 }

@@ -90,7 +90,7 @@ class ClusterFeaturesITCase {
         // invalid changes are rejected and change nothing
         assertThatThrownBy(() -> admin.updateClusterFeatures(level(4), false).get())
                 .hasRootCauseInstanceOf(InvalidClusterFeatureUpdateException.class)
-                .hasMessageContaining("supports levels 2 to 3");
+                .hasMessageContaining("supports levels [2, 3]");
         assertThatThrownBy(
                         () ->
                                 admin.updateClusterFeatures(
@@ -101,8 +101,16 @@ class ClusterFeaturesITCase {
                 .hasMessageContaining("Unknown cluster feature");
         assertThat(describe().finalizedLevel()).isEqualTo(2);
 
-        // the raise is saved and every tablet server follows it
-        admin.updateClusterFeatures(level(3), false).get();
+        // a raise based on an epoch other than the described one is rejected
+        int epoch = admin.describeClusterFeatures().get().epoch();
+        assertThatThrownBy(() -> admin.updateClusterFeatures(level(3), epoch + 1, false).get())
+                .hasRootCauseInstanceOf(InvalidClusterFeatureUpdateException.class)
+                .hasMessageContaining("not the expected " + (epoch + 1));
+        assertThat(describe().finalizedLevel()).isEqualTo(2);
+
+        // the raise is saved, the epoch goes up, and every tablet server follows it
+        admin.updateClusterFeatures(level(3), epoch, false).get();
+        assertThat(admin.describeClusterFeatures().get().epoch()).isEqualTo(epoch + 1);
         assertThat(describe()).isEqualTo(new ClusterFeatureDescription(FEATURE, 3, 3));
         assertAppliedLevelOnTabletServers(3);
 
@@ -156,7 +164,8 @@ class ClusterFeaturesITCase {
     }
 
     private ClusterFeatureDescription describe() throws Exception {
-        Collection<ClusterFeatureDescription> features = admin.describeClusterFeatures().get();
+        Collection<ClusterFeatureDescription> features =
+                admin.describeClusterFeatures().get().features();
         assertThat(features).hasSize(ClusterFeature.values().length);
         return features.stream().filter(f -> f.name().equals(FEATURE)).findFirst().get();
     }

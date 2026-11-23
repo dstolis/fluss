@@ -18,6 +18,7 @@
 package org.apache.fluss.server.zk.data;
 
 import org.apache.fluss.cluster.Endpoint;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 
 import java.util.Collections;
 import java.util.List;
@@ -34,14 +35,16 @@ public class CoordinatorAddress {
     private final String id;
     private final List<Endpoint> endpoints;
     // cluster feature name -> highest level this coordinator supports
-    private final Map<String, Integer> supportedFeatures;
+    private final Map<String, SupportedLevelRange> supportedFeatures;
 
     public CoordinatorAddress(String id, List<Endpoint> endpoints) {
         this(id, endpoints, Collections.emptyMap());
     }
 
     public CoordinatorAddress(
-            String id, List<Endpoint> endpoints, Map<String, Integer> supportedFeatures) {
+            String id,
+            List<Endpoint> endpoints,
+            Map<String, SupportedLevelRange> supportedFeatures) {
         this.id = id;
         this.endpoints = endpoints;
         this.supportedFeatures = Collections.unmodifiableMap(new TreeMap<>(supportedFeatures));
@@ -56,11 +59,11 @@ public class CoordinatorAddress {
     }
 
     /**
-     * The cluster features this coordinator supports, mapped to the highest supported level. It is
-     * empty for coordinators that registered before cluster features existed, which support the
+     * The cluster features this coordinator supports, mapped to the range of supported levels. It
+     * is empty for coordinators that registered before cluster features existed, which support the
      * baseline level of every feature.
      */
-    public Map<String, Integer> getSupportedFeatures() {
+    public Map<String, SupportedLevelRange> getSupportedFeatures() {
         return supportedFeatures;
     }
 

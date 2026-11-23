@@ -1895,11 +1895,14 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         ctx -> {
                             try {
                                 ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
-                                ClusterFeatureLevels finalized = manager.finalizedLevels();
+                                ClusterFeatureManager.FinalizedState state =
+                                        manager.finalizedState();
+                                ClusterFeatureLevels finalized = state.levels();
                                 ClusterFeatureLevels supported =
                                         manager.supportedLevels(ctx.liveTabletServerSet());
                                 DescribeClusterFeaturesResponse response =
-                                        new DescribeClusterFeaturesResponse();
+                                        new DescribeClusterFeaturesResponse()
+                                                .setFeatureEpoch(state.epoch());
                                 for (ClusterFeature feature : ClusterFeature.values()) {
                                     response.addFeature()
                                             .setName(feature.featureName())
@@ -1929,6 +1932,8 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             requestedLevels.put(feature.getName(), feature.getLevel());
         }
         boolean validateOnly = request.hasValidateOnly() && request.isValidateOnly();
+        Integer expectedEpoch =
+                request.hasExpectedFeatureEpoch() ? request.getExpectedFeatureEpoch() : null;
         EventManager eventManager = eventManagerSupplier.get();
         // The raise runs on the coordinator event thread, like the registration of tablet servers,
         // so a server that registers meanwhile is either seen by the validation or checked by the
@@ -1937,17 +1942,20 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 new AccessContextEvent<>(
                         ctx -> {
                             try {
-                                ClusterFeatureLevels levels =
+                                ClusterFeatureManager.FinalizedState state =
                                         new ClusterFeatureManager(zkClient)
                                                 .update(
                                                         requestedLevels,
                                                         validateOnly,
+                                                        expectedEpoch,
                                                         ctx.getCoordinatorZkVersion(),
                                                         ctx.liveTabletServerSet());
                                 if (!validateOnly) {
-                                    eventManager.put(new ClusterFeaturesChangedEvent(levels));
+                                    eventManager.put(
+                                            new ClusterFeaturesChangedEvent(state.levels()));
                                 }
-                                return new UpdateClusterFeaturesResponse();
+                                return new UpdateClusterFeaturesResponse()
+                                        .setFeatureEpoch(state.epoch());
                             } catch (ApiException e) {
                                 throw e;
                             } catch (Exception e) {

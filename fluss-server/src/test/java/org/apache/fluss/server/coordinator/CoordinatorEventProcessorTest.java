@@ -56,6 +56,7 @@ import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.coordinator.TestingControlledNotifyGateway.PendingNotify;
 import org.apache.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
 import org.apache.fluss.server.coordinator.event.ClusterFeaturesChangedEvent;
@@ -491,7 +492,7 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
     }
 
     private static TabletServerRegistration tabletServerRegistration(
-            int serverId, Map<String, Integer> supportedFeatures) {
+            int serverId, Map<String, SupportedLevelRange> supportedFeatures) {
         return new TabletServerRegistration(
                 "rack" + serverId,
                 Endpoint.fromListenersString(

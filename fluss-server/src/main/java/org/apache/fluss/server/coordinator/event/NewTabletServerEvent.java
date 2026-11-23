@@ -17,6 +17,7 @@
 
 package org.apache.fluss.server.coordinator.event;
 
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.metadata.ServerInfo;
 
 import java.util.Collections;
@@ -28,13 +29,14 @@ public class NewTabletServerEvent implements CoordinatorEvent {
 
     private final ServerInfo serverInfo;
     // the cluster features the server registered, mapped to the highest supported level
-    private final Map<String, Integer> supportedFeatures;
+    private final Map<String, SupportedLevelRange> supportedFeatures;
 
     public NewTabletServerEvent(ServerInfo serverInfo) {
         this(serverInfo, Collections.emptyMap());
     }
 
-    public NewTabletServerEvent(ServerInfo serverInfo, Map<String, Integer> supportedFeatures) {
+    public NewTabletServerEvent(
+            ServerInfo serverInfo, Map<String, SupportedLevelRange> supportedFeatures) {
         this.serverInfo = serverInfo;
         this.supportedFeatures = supportedFeatures;
     }
@@ -44,7 +46,7 @@ public class NewTabletServerEvent implements CoordinatorEvent {
     }
 
     /** The cluster features the server registered, mapped to the highest supported level. */
-    public Map<String, Integer> getSupportedFeatures() {
+    public Map<String, SupportedLevelRange> getSupportedFeatures() {
         return supportedFeatures;
     }
 

@@ -19,6 +19,7 @@ package org.apache.fluss.server.feature;
 
 import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.zk.NOPErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.Collections;
+import java.util.Map;
 
 import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,7 +87,7 @@ class ClusterFeaturesTest {
                 .isInstanceOf(IllegalConfigurationException.class)
                 .hasMessageContaining(
                         "does not support the finalized cluster features "
-                                + "[log.record-batch.version (supports 3, finalized 4)]");
+                                + "[log.record-batch.version (supports [2, 3], finalized 4)]");
     }
 
     @Test
@@ -106,6 +108,29 @@ class ClusterFeaturesTest {
         assertThat(
                         ClusterFeatures.unsupportedFeatures(
                                 Collections.emptyMap(), ClusterFeatureLevels.baseline()))
+                .isEmpty();
+        ClusterFeatureLevels raised =
+                ClusterFeatureLevels.baseline().with(LOG_RECORD_BATCH_VERSION, 3);
+        assertThat(ClusterFeatures.unsupportedFeatures(Collections.emptyMap(), raised))
+                .containsExactly("log.record-batch.version (supports [2, 2], finalized 3)");
+        assertThat(ClusterFeatures.unsupportedFeatures(ClusterFeatures.supportedFeatures(), raised))
+                .isEmpty();
+    }
+
+    @Test
+    void testServerWhoseMinimumIsAboveTheFinalizedLevelIsUnsupported() {
+        // a later release that dropped level 2 cannot join a cluster still at level 2
+        Map<String, SupportedLevelRange> droppedLevel2 =
+                Collections.singletonMap(
+                        LOG_RECORD_BATCH_VERSION.featureName(), new SupportedLevelRange(3, 4));
+        assertThat(
+                        ClusterFeatures.unsupportedFeatures(
+                                droppedLevel2, ClusterFeatureLevels.baseline()))
+                .containsExactly("log.record-batch.version (supports [3, 4], finalized 2)");
+        assertThat(
+                        ClusterFeatures.unsupportedFeatures(
+                                droppedLevel2,
+                                ClusterFeatureLevels.baseline().with(LOG_RECORD_BATCH_VERSION, 3)))
                 .isEmpty();
     }
 

@@ -964,7 +964,7 @@ public interface Admin extends AutoCloseable {
 
     /**
      * Describe the cluster features asynchronously: for each feature, the level the cluster has
-     * enabled and the level it can be raised to.
+     * enabled and the level it can be raised to, and the feature epoch of the enabled levels.
      *
      * <p>A cluster feature is a capability, such as a new data format, that must only be used once
      * every server of the cluster supports it. Servers are upgraded first, and the level is raised
@@ -976,7 +976,7 @@ public interface Admin extends AutoCloseable {
      * @return a {@link CompletableFuture} that completes with the description of every feature.
      * @since 1.1
      */
-    CompletableFuture<Collection<ClusterFeatureDescription>> describeClusterFeatures();
+    CompletableFuture<ClusterFeaturesDescription> describeClusterFeatures();
 
     /**
      * Raise the finalized level of cluster features asynchronously. Either every given feature is
@@ -1004,6 +1004,22 @@ public interface Admin extends AutoCloseable {
      */
     CompletableFuture<Void> updateClusterFeatures(
             Map<String, Integer> featureLevels, boolean validateOnly);
+
+    /**
+     * Raise the finalized level of cluster features asynchronously, like {@link
+     * #updateClusterFeatures(Map, boolean)}, but only if the feature epoch is still the given one,
+     * as returned by {@link #describeClusterFeatures()}. The raise is rejected with {@link
+     * InvalidClusterFeatureUpdateException} if another raise happened in between, so it never
+     * applies on top of levels the caller did not see. A raise to the levels the cluster already
+     * has succeeds whatever the epoch, so it is safe to retry.
+     *
+     * @param featureLevels the new finalized level of each feature, keyed by feature name.
+     * @param expectedFeatureEpoch the feature epoch the caller described.
+     * @param validateOnly whether to only validate the change.
+     * @since 1.1
+     */
+    CompletableFuture<Void> updateClusterFeatures(
+            Map<String, Integer> featureLevels, int expectedFeatureEpoch, boolean validateOnly);
 
     /**
      * List per-bucket remote log manifest entries for a table or partition scope.

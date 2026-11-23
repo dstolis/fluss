@@ -276,6 +276,8 @@ message DescribeClusterFeaturesRequest {
 
 message DescribeClusterFeaturesResponse {
   repeated PbClusterFeature features = 1;
+  // The feature epoch of the finalized levels, which goes up by one with every raise.
+  optional int32 feature_epoch = 2;
 }
 
 message UpdateClusterFeaturesRequest {
@@ -283,9 +285,14 @@ message UpdateClusterFeaturesRequest {
   repeated PbClusterFeatureLevel features = 1;
   // If true, the change is validated but not made.
   optional bool validate_only = 2;
+  // If set, the raise is rejected unless the feature epoch is still this one, so it cannot apply
+  // on top of a raise the caller did not see.
+  optional int32 expected_feature_epoch = 3;
 }
 
 message UpdateClusterFeaturesResponse {
+  // The feature epoch after the update.
+  optional int32 feature_epoch = 1;
 }
 
 // produce log request and response

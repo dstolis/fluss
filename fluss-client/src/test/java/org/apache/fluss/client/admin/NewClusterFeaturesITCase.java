@@ -44,7 +44,7 @@ class NewClusterFeaturesITCase {
                         ConnectionFactory.createConnection(
                                 FLUSS_CLUSTER_EXTENSION.getClientConfig());
                 Admin admin = conn.getAdmin()) {
-            assertThat(admin.describeClusterFeatures().get())
+            assertThat(admin.describeClusterFeatures().get().features())
                     .allSatisfy(
                             feature -> {
                                 ClusterFeature known = ClusterFeature.forName(feature.name());

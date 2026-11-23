@@ -1225,7 +1225,7 @@ public class FlussAdmin implements Admin {
     }
 
     @Override
-    public CompletableFuture<Collection<ClusterFeatureDescription>> describeClusterFeatures() {
+    public CompletableFuture<ClusterFeaturesDescription> describeClusterFeatures() {
         // retried after a metadata refresh, so it also works right after a coordinator change
         return retryableCoordinatorGateway
                 .describeClusterFeatures(new DescribeClusterFeaturesRequest())
@@ -1239,15 +1239,31 @@ public class FlussAdmin implements Admin {
                                                 feature.getFinalizedLevel(),
                                                 feature.getSupportedLevel()));
                             }
-                            return features;
+                            return new ClusterFeaturesDescription(
+                                    response.hasFeatureEpoch() ? response.getFeatureEpoch() : 0,
+                                    features);
                         });
     }
 
     @Override
     public CompletableFuture<Void> updateClusterFeatures(
             Map<String, Integer> featureLevels, boolean validateOnly) {
-        UpdateClusterFeaturesRequest request =
-                new UpdateClusterFeaturesRequest().setValidateOnly(validateOnly);
+        return updateClusterFeatures(
+                new UpdateClusterFeaturesRequest().setValidateOnly(validateOnly), featureLevels);
+    }
+
+    @Override
+    public CompletableFuture<Void> updateClusterFeatures(
+            Map<String, Integer> featureLevels, int expectedFeatureEpoch, boolean validateOnly) {
+        return updateClusterFeatures(
+                new UpdateClusterFeaturesRequest()
+                        .setValidateOnly(validateOnly)
+                        .setExpectedFeatureEpoch(expectedFeatureEpoch),
+                featureLevels);
+    }
+
+    private CompletableFuture<Void> updateClusterFeatures(
+            UpdateClusterFeaturesRequest request, Map<String, Integer> featureLevels) {
         featureLevels.forEach((name, level) -> request.addFeature().setName(name).setLevel(level));
         // A raise is idempotent, so it is safe to retry after a metadata refresh when the
         // coordinator changed. A coordinator that lost leadership rejects it without any change.

@@ -49,8 +49,8 @@ import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BA
  *
  * <p>The applied levels follow the stored ones through a watch, so they can lag behind for a short
  * time after a raise. Before this server rejects something because a level is too low, it reads the
- * stored levels again, as Kafka brokers do, so a writer that learned the new level from another
- * server is not turned away. The read is made at most once per {@link #REFRESH_INTERVAL_MS}.
+ * stored levels again, so a writer that learned the new level from another server is not turned
+ * away. The read is made at most once per {@link #REFRESH_INTERVAL_MS}.
  */
 @Internal
 @ThreadSafe

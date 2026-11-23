@@ -26,7 +26,7 @@ import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
  * A capability that a cluster turns on once every server supports it, such as a new log record
- * batch format. Each feature has numbered levels. Every server registers the highest level it
+ * batch format. Each feature has numbered levels. Every server registers the range of levels it
  * supports, and the cluster has one finalized level per feature, which the coordinator only raises
  * once every registered server supports it and never lowers.
  *
@@ -42,19 +42,22 @@ public enum ClusterFeature {
     LOG_RECORD_BATCH_VERSION(
             "log.record-batch.version",
             LogRecordBatchFormat.LOG_MAGIC_VALUE_V2,
+            LogRecordBatchFormat.LOG_MAGIC_VALUE_V2,
             LogRecordBatchFormat.LOG_MAGIC_VALUE_V3);
 
     private final String featureName;
     private final int baselineLevel;
+    private final int minimumLevel;
     private final int latestLevel;
 
-    ClusterFeature(String featureName, int baselineLevel, int latestLevel) {
+    ClusterFeature(String featureName, int baselineLevel, int minimumLevel, int latestLevel) {
         checkArgument(
-                latestLevel >= baselineLevel,
-                "The latest level of cluster feature %s must not be below its baseline level.",
+                baselineLevel <= minimumLevel && minimumLevel <= latestLevel,
+                "The levels of cluster feature %s must be ordered baseline <= minimum <= latest.",
                 featureName);
         this.featureName = featureName;
         this.baselineLevel = baselineLevel;
+        this.minimumLevel = minimumLevel;
         this.latestLevel = latestLevel;
     }
 
@@ -82,8 +85,29 @@ public enum ClusterFeature {
         return baselineLevel;
     }
 
+    /**
+     * The lowest level this build supports. A later release raises it to drop the code of an old
+     * level, once every cluster is above it.
+     */
+    public int minimumLevel() {
+        return minimumLevel;
+    }
+
     /** The highest level this build supports. */
     public int latestLevel() {
         return latestLevel;
+    }
+
+    /** The levels this build supports. */
+    public SupportedLevelRange supportedRange() {
+        return new SupportedLevelRange(minimumLevel, latestLevel);
+    }
+
+    /**
+     * The levels supported by a server that registered before the feature existed, or that did not
+     * register it: only the baseline.
+     */
+    public SupportedLevelRange baselineRange() {
+        return new SupportedLevelRange(baselineLevel, baselineLevel);
     }
 }

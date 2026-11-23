@@ -18,6 +18,7 @@
 package org.apache.fluss.server.zk.data;
 
 import org.apache.fluss.cluster.Endpoint;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.fluss.utils.json.JsonSerdeTestBase;
@@ -48,7 +49,8 @@ public class CoordinatorAddressJsonSerdeTest extends JsonSerdeTestBase<Coordinat
                 new CoordinatorAddress(
                         "2",
                         Arrays.asList(new Endpoint("localhost", 1002, "CLIENT")),
-                        Collections.singletonMap("log.record-batch.version", 3));
+                        Collections.singletonMap(
+                                "log.record-batch.version", new SupportedLevelRange(2, 3)));
         return new CoordinatorAddress[] {coordinatorAddress, withSupportedFeatures};
     }
 
@@ -57,7 +59,7 @@ public class CoordinatorAddressJsonSerdeTest extends JsonSerdeTestBase<Coordinat
         return new String[] {
             "{\"version\":3,\"id\":\"1\",\"listeners\":\"CLIENT://localhost:1001,FLUSS://127.0.0.1:9124\"}",
             "{\"version\":3,\"id\":\"2\",\"listeners\":\"CLIENT://localhost:1002\","
-                    + "\"supported_features\":{\"log.record-batch.version\":3}}"
+                    + "\"supported_features\":{\"log.record-batch.version\":{\"min\":2,\"max\":3}}}"
         };
     }
 

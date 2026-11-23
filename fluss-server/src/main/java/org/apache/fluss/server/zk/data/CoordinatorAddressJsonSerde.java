@@ -19,6 +19,7 @@ package org.apache.fluss.server.zk.data;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.cluster.Endpoint;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.fluss.utils.json.JsonDeserializer;
@@ -26,8 +27,6 @@ import org.apache.fluss.utils.json.JsonSerializer;
 
 import java.io.IOException;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -58,14 +57,8 @@ public class CoordinatorAddressJsonSerde
         generator.writeStringField(ID, coordinatorAddress.getId());
         generator.writeStringField(
                 LISTENERS, Endpoint.toListenersString(coordinatorAddress.getEndpoints()));
-        if (!coordinatorAddress.getSupportedFeatures().isEmpty()) {
-            generator.writeObjectFieldStart(SUPPORTED_FEATURES);
-            for (Map.Entry<String, Integer> feature :
-                    coordinatorAddress.getSupportedFeatures().entrySet()) {
-                generator.writeNumberField(feature.getKey(), feature.getValue());
-            }
-            generator.writeEndObject();
-        }
+        SupportedFeaturesJson.write(
+                SUPPORTED_FEATURES, coordinatorAddress.getSupportedFeatures(), generator);
         generator.writeEndObject();
     }
 
@@ -82,14 +75,10 @@ public class CoordinatorAddressJsonSerde
             endpoints = Endpoint.fromListenersString(node.get(LISTENERS).asText());
         }
         // coordinators that registered before cluster features existed register none
-        Map<String, Integer> supportedFeatures = new HashMap<>();
-        if (node.has(SUPPORTED_FEATURES)) {
-            Iterator<Map.Entry<String, JsonNode>> features = node.get(SUPPORTED_FEATURES).fields();
-            while (features.hasNext()) {
-                Map.Entry<String, JsonNode> feature = features.next();
-                supportedFeatures.put(feature.getKey(), feature.getValue().asInt());
-            }
-        }
+        Map<String, SupportedLevelRange> supportedFeatures =
+                node.has(SUPPORTED_FEATURES)
+                        ? SupportedFeaturesJson.read(node.get(SUPPORTED_FEATURES))
+                        : Collections.emptyMap();
         return new CoordinatorAddress(id, endpoints, supportedFeatures);
     }
 }
