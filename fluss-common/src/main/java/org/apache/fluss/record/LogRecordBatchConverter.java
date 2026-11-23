@@ -102,6 +102,16 @@ public final class LogRecordBatchConverter {
         return MemoryLogRecords.pointToBytes(out.toByteArray());
     }
 
+    /**
+     * Returns the bytes of one complete batch, rewritten as V0 if its magic is above {@code
+     * maxMagic}, otherwise as they are.
+     */
+    public static byte[] convertBatch(byte[] batchBytes, byte maxMagic) {
+        DefaultLogRecordBatch batch = new DefaultLogRecordBatch();
+        batch.pointTo(MemorySegment.wrap(batchBytes), 0);
+        return batch.magic() <= maxMagic ? batchBytes : toV0(batch);
+    }
+
     /** Rewrites one batch as a V0 batch with the same records. */
     static byte[] toV0(DefaultLogRecordBatch batch) {
         MemorySegment src = batch.segment();

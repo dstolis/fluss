@@ -20,6 +20,7 @@ package org.apache.fluss.server.tablet;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
+import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
@@ -27,6 +28,8 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.LogRecordBatch;
 import org.apache.fluss.record.LogRecordBatchFormat;
 import org.apache.fluss.record.MemoryLogRecords;
+import org.apache.fluss.remote.RemoteLogFetchInfo;
+import org.apache.fluss.remote.RemoteLogSegment;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
@@ -34,10 +37,13 @@ import org.apache.fluss.server.entity.FetchReqInfo;
 import org.apache.fluss.server.log.FetchParams;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
+import org.apache.fluss.utils.FlussPaths;
+import org.apache.fluss.utils.IOUtils;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.io.InputStream;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -145,6 +151,29 @@ class LogRecordBatchV3RemoteReadITCase {
                                 .get(0)
                                 .baseLogOffset())
                 .isEqualTo(secondBatchBaseOffset);
+
+        // the server writes a V0 copy of the segment in the background and then hands it out,
+        // so old clients download it instead of the server reading the segment for every fetch
+        int fetchSize = batchSizeInBytes;
+        retry(
+                Duration.ofMinutes(1),
+                () ->
+                        assertThat(fetch(leaderId, tb, 0L, fetchSize).records())
+                                .as("the copy is handed out")
+                                .isNull());
+        FetchLogResultForBucket copyResult = fetch(leaderId, tb, 0L, batchSizeInBytes);
+        RemoteLogSegment copy = copyResult.remoteLogFetchInfo().remoteLogSegmentList().get(0);
+        assertThat(copy.maxBatchMagic()).isEqualTo(LogRecordBatchFormat.LOG_MAGIC_VALUE_V2);
+        List<LogRecordBatch> copied = readCopy(copyResult.remoteLogFetchInfo(), 0L);
+        assertThat(copied).isNotEmpty();
+        long expectedOffset = 0L;
+        for (LogRecordBatch batch : copied) {
+            batch.ensureValid();
+            assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V0);
+            assertThat(batch.baseLogOffset()).isEqualTo(expectedOffset);
+            expectedOffset = batch.nextLogOffset();
+        }
+        assertThat(expectedOffset).isEqualTo(copy.remoteLogEndOffset());
     }
 
     private static Configuration clusterConf() {
@@ -155,8 +184,54 @@ class LogRecordBatchV3RemoteReadITCase {
         return conf;
     }
 
-    /** Fetches like a client whose {@code FETCH_LOG} version reads batches up to magic V2. */
+    /**
+     * Fetches like a client whose {@code FETCH_LOG} version reads batches up to magic V2. A remote
+     * segment handed out is downloaded and read like the client does, from the fetch offset.
+     */
     private static List<LogRecordBatch> fetchAsOldClient(
+            int leaderId, TableBucket tb, long fetchOffset, int maxBytes) throws Exception {
+        FetchLogResultForBucket bucketResult = fetch(leaderId, tb, fetchOffset, maxBytes);
+        if (bucketResult.records() == null) {
+            // the V0 copy of the segment, never a segment the client can't decode
+            RemoteLogFetchInfo remote = bucketResult.remoteLogFetchInfo();
+            assertThat(remote).isNotNull();
+            for (RemoteLogSegment segment : remote.remoteLogSegmentList()) {
+                assertThat(segment.maxBatchMagic())
+                        .isLessThanOrEqualTo(LogRecordBatchFormat.LOG_MAGIC_VALUE_V2);
+            }
+            return readCopy(remote, fetchOffset);
+        }
+        List<LogRecordBatch> batches = new ArrayList<>();
+        bucketResult.records().batches().forEach(batches::add);
+        return batches;
+    }
+
+    /** Reads the first handed out segment from the batch that holds the fetch offset. */
+    private static List<LogRecordBatch> readCopy(RemoteLogFetchInfo remote, long fetchOffset)
+            throws Exception {
+        RemoteLogSegment segment = remote.remoteLogSegmentList().get(0);
+        FsPath file =
+                FlussPaths.remoteLogSegmentFile(
+                        FlussPaths.remoteLogSegmentDir(
+                                new FsPath(remote.remoteLogTabletDir()),
+                                segment.remoteLogSegmentId()),
+                        segment.remoteLogStartOffset());
+        byte[] bytes = new byte[segment.segmentSizeInBytes()];
+        try (InputStream in = file.getFileSystem().open(file)) {
+            IOUtils.readFully(in, bytes);
+            // the size handed out is the size of the copy
+            assertThat(in.read()).isEqualTo(-1);
+        }
+        List<LogRecordBatch> batches = new ArrayList<>();
+        for (LogRecordBatch batch : MemoryLogRecords.pointToBytes(bytes).batches()) {
+            if (batch.lastLogOffset() >= fetchOffset) {
+                batches.add(batch);
+            }
+        }
+        return batches;
+    }
+
+    private static FetchLogResultForBucket fetch(
             int leaderId, TableBucket tb, long fetchOffset, int maxBytes) throws Exception {
         FetchParams params = new FetchParams(-1, Integer.MAX_VALUE);
         params.convertBatchesAbove(LogRecordBatchFormat.LOG_MAGIC_VALUE_V2);
@@ -173,10 +248,6 @@ class LogRecordBatchV3RemoteReadITCase {
                         result::complete);
         FetchLogResultForBucket bucketResult = result.get().get(tb);
         assertThat(bucketResult.failed()).isFalse();
-        // an old reader gets the batches inline, never a remote segment it can't decode
-        assertThat(bucketResult.records()).isNotNull();
-        List<LogRecordBatch> batches = new ArrayList<>();
-        bucketResult.records().batches().forEach(batches::add);
-        return batches;
+        return bucketResult;
     }
 }

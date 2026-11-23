@@ -19,12 +19,14 @@ package org.apache.fluss.server.log.remote;
 
 import org.apache.fluss.memory.MemorySegment;
 import org.apache.fluss.record.DefaultLogRecordBatch;
+import org.apache.fluss.record.LogRecordBatchConverter;
 import org.apache.fluss.record.LogRecordBatchFormat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.Arrays;
 
 /** Utilities to read log record batches from the data of a remote log segment. */
@@ -91,6 +93,39 @@ public final class RemoteLogSegmentReadUtils {
             out.write(records, 0, records.length);
         }
         return out.toByteArray();
+    }
+
+    /**
+     * Copies every batch of a segment stream to {@code out}, one batch at a time, with the batches
+     * whose magic is above {@code maxMagic} rewritten as V0.
+     *
+     * @param in the data of the segment, positioned at its start
+     * @param segmentSize the size of the segment in bytes
+     * @param out where the batches are written
+     * @param maxMagic the highest batch magic that is copied as it is
+     * @return the number of bytes written
+     */
+    public static long copyConvertedBatches(
+            InputStream in, int segmentSize, OutputStream out, byte maxMagic) throws IOException {
+        byte[] header = new byte[LogRecordBatchFormat.LOG_OVERHEAD];
+        int position = 0;
+        long written = 0;
+        while (position + header.length <= segmentSize) {
+            if (!readFully(in, header, 0, header.length)) {
+                break;
+            }
+            int length = MemorySegment.wrap(header).getInt(LogRecordBatchFormat.LENGTH_OFFSET);
+            byte[] batch = Arrays.copyOf(header, header.length + length);
+            if (!readFully(in, batch, header.length, length)) {
+                throw new EOFException(
+                        "The segment ends inside the batch at position " + position + ".");
+            }
+            position += batch.length;
+            byte[] converted = LogRecordBatchConverter.convertBatch(batch, maxMagic);
+            out.write(converted);
+            written += converted.length;
+        }
+        return written;
     }
 
     private static void skipFully(InputStream in, long bytes) throws IOException {

@@ -51,10 +51,7 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.metrics.MetricNames;
 import org.apache.fluss.metrics.groups.MetricGroup;
 import org.apache.fluss.plugin.PluginManager;
-import org.apache.fluss.record.BytesViewLogRecords;
 import org.apache.fluss.record.DefaultKvRecordBatch;
-import org.apache.fluss.record.FileLogProjection;
-import org.apache.fluss.record.FileLogRecords;
 import org.apache.fluss.record.KeyRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
 import org.apache.fluss.record.LogRecordBatchConverter;
@@ -110,8 +107,8 @@ import org.apache.fluss.server.log.LogOffsetMetadata;
 import org.apache.fluss.server.log.LogReadInfo;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.log.checkpoint.OffsetCheckpointFile;
+import org.apache.fluss.server.log.remote.RemoteLogCompatCopies;
 import org.apache.fluss.server.log.remote.RemoteLogManager;
-import org.apache.fluss.server.log.remote.RemoteLogSegmentReadUtils;
 import org.apache.fluss.server.metadata.ClusterMetadata;
 import org.apache.fluss.server.metadata.TableMetadata;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
@@ -151,7 +148,6 @@ import javax.annotation.concurrent.GuardedBy;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -249,6 +245,7 @@ public class ReplicaManager implements ServerReconfigurable {
 
     // remote log manager for remote log storage.
     private final RemoteLogManager remoteLogManager;
+    private final OldReaderRemoteFetcher oldReaderRemoteFetcher;
 
     // for metrics
     private final TabletServerMetricGroup serverMetricGroup;
@@ -377,6 +374,8 @@ public class ReplicaManager implements ServerReconfigurable {
                 DefaultSnapshotContext.create(
                         zkClient, completedKvSnapshotCommitter, kvSnapshotResource, conf);
         this.remoteLogManager = remoteLogManager;
+        this.oldReaderRemoteFetcher =
+                new OldReaderRemoteFetcher(remoteLogManager, new RemoteLogCompatCopies());
         this.serverMetricGroup = serverMetricGroup;
         this.userMetrics = userMetrics;
         this.clock = clock;
@@ -1877,7 +1876,7 @@ public class ReplicaManager implements ServerReconfigurable {
                             tryFetchRemoteFirst(replica, fetchOffset);
                     if (remoteFirstFetchResult != null && fetchParams.convertsBatches()) {
                         remoteFirstFetchResult =
-                                readRemoteForOldReader(
+                                oldReaderRemoteFetcher.fetch(
                                         replica,
                                         remoteFirstFetchResult,
                                         adjustedMaxBytes,
@@ -1947,7 +1946,7 @@ public class ReplicaManager implements ServerReconfigurable {
                     result = handleFetchOutOfRangeException(replica, fetchOffset, e);
                     if (fetchParams.convertsBatches()) {
                         result =
-                                readRemoteForOldReader(
+                                oldReaderRemoteFetcher.fetch(
                                         replica, result, adjustedMaxBytes, fetchParams);
                     }
                 } else {
@@ -2037,122 +2036,6 @@ public class ReplicaManager implements ServerReconfigurable {
                                             fetchOffset, tb))));
         } else {
             return FetchLogResultForBucket.error(tb, ApiError.fromThrowable(e));
-        }
-    }
-
-    /**
-     * Prepares a remote fetch result for a client that cannot read every batch format. The leading
-     * segments the client can decode are handed out as usual. If the first segment holds batches
-     * the client cannot decode, the server reads it on the client's behalf and returns the
-     * converted batches inline, since handing it out would let the client download batches it
-     * cannot decode.
-     *
-     * <p>At most {@code maxBytes} are read from the fetch position, but at least one complete
-     * batch. The client then continues fetching from the next offset as usual.
-     */
-    private FetchLogResultForBucket readRemoteForOldReader(
-            Replica replica,
-            FetchLogResultForBucket result,
-            int maxBytes,
-            FetchParams fetchParams) {
-        RemoteLogFetchInfo remoteInfo = result.remoteLogFetchInfo();
-        if (remoteInfo == null || remoteInfo.remoteLogSegmentList().isEmpty()) {
-            return result;
-        }
-        TableBucket tb = replica.getTableBucket();
-        List<RemoteLogSegment> readable =
-                readableSegments(
-                        remoteInfo.remoteLogSegmentList(), fetchParams.readerMaxBatchMagic());
-        if (!readable.isEmpty()) {
-            // the reader can decode these segments itself, so hand them out as usual
-            LOG.debug(
-                    "Handing out {} remote log segments of {} as stored to a reader of batch magic "
-                            + "up to {}.",
-                    readable.size(),
-                    tb,
-                    fetchParams.readerMaxBatchMagic());
-            return FetchLogResultForBucket.remote(
-                    tb,
-                    new RemoteLogFetchInfo(
-                            remoteInfo.remoteLogTabletDir(),
-                            remoteInfo.partitionName(),
-                            readable,
-                            remoteInfo.firstStartPos()),
-                    result.getHighWatermark());
-        }
-        RemoteLogSegment segment = remoteInfo.remoteLogSegmentList().get(0);
-        LOG.debug(
-                "Converting remote log segment {} of {} with batch magic up to {} inline for a "
-                        + "reader of batch magic up to {}.",
-                segment.remoteLogSegmentId(),
-                tb,
-                segment.maxBatchMagic(),
-                fetchParams.readerMaxBatchMagic());
-        FsPath remoteLogDir = FlussPaths.remoteLogDir(replica.getRemoteDataDir());
-        try (InputStream in =
-                remoteLogManager.getRemoteLogStorage().fetchLogData(remoteLogDir, segment)) {
-            long fetchOffset =
-                    fetchParams.fetchOffset() == FetchParams.FETCH_FROM_EARLIEST_OFFSET
-                            ? replica.getLogStartOffset()
-                            : fetchParams.fetchOffset();
-            byte[] bytes =
-                    RemoteLogSegmentReadUtils.readBatches(
-                            in,
-                            remoteInfo.firstStartPos(),
-                            segment.segmentSizeInBytes(),
-                            fetchOffset,
-                            Math.max(1, maxBytes));
-            LogRecords records = projectIfNeeded(bytes, fetchParams.projection(), maxBytes);
-            return FetchLogResultForBucket.records(
-                    tb,
-                    LogRecordBatchConverter.convert(records, fetchParams.readerMaxBatchMagic()),
-                    result.getHighWatermark(),
-                    -1L,
-                    -1L);
-        } catch (Exception e) {
-            LOG.warn(
-                    "Failed to read remote log segment {} of {} for an old reader.",
-                    segment,
-                    tb,
-                    e);
-            return FetchLogResultForBucket.error(tb, ApiError.fromThrowable(e));
-        }
-    }
-
-    /**
-     * The leading segments whose batches the reader can decode. Segments uploaded by versions that
-     * did not record their batch magic predate V3, so they only hold formats every reader knows.
-     */
-    private static List<RemoteLogSegment> readableSegments(
-            List<RemoteLogSegment> segments, byte readerMaxBatchMagic) {
-        List<RemoteLogSegment> readable = new ArrayList<>();
-        for (RemoteLogSegment segment : segments) {
-            if (segment.maxBatchMagic() > readerMaxBatchMagic) {
-                break;
-            }
-            readable.add(segment);
-        }
-        return readable;
-    }
-
-    /** Applies the fetch's column projection, which needs the batches in a file. */
-    private static LogRecords projectIfNeeded(
-            byte[] bytes, @Nullable FileLogProjection projection, int maxBytes) throws Exception {
-        if (projection == null || bytes.length == 0) {
-            return MemoryLogRecords.pointToBytes(bytes);
-        }
-        File file = File.createTempFile("fluss-remote-fetch", ".log");
-        try {
-            Files.write(file.toPath(), bytes);
-            try (FileLogRecords fileRecords = FileLogRecords.open(file)) {
-                BytesViewLogRecords projected =
-                        projection.project(
-                                fileRecords.channel(), 0, bytes.length, Math.max(1, maxBytes));
-                // copy the projected batches before the file is closed and deleted
-                return LogRecordBatchConverter.copyToMemory(projected);
-            }
-        } finally {
-            Files.deleteIfExists(file.toPath());
         }
     }
 
@@ -2895,6 +2778,7 @@ public class ReplicaManager implements ServerReconfigurable {
         replicaFetcherManager.shutdown();
         delayedWriteManager.shutdown();
         delayedFetchLogManager.shutdown();
+        oldReaderRemoteFetcher.close();
 
         // Checkpoint highWatermark.
         checkpointHighWatermarks();

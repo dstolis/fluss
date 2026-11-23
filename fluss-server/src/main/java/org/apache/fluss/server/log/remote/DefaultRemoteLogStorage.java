@@ -122,7 +122,11 @@ public class DefaultRemoteLogStorage implements RemoteLogStorage {
      * {$remote.data.dir}/log/{db}/{tableName}_{tableId}/{bucketId}/{segment_uuid}/{remote_log_start_offset}.index
      * {$remote.data.dir}/log/{db}/{tableName}_{tableId}/{bucketId}/{segment_uuid}/{remote_log_start_offset}.timeindex
      * {$remote.data.dir}/log/{db}/{tableName}_{tableId}/{bucketId}/{segment_uuid}/{remote_log_end_offset}.writer_snapshot
+     * {$remote.data.dir}/log/{db}/{tableName}_{tableId}/{bucketId}/{segment_uuid}/{copy_uuid}/{remote_log_start_offset}.log
      * </pre>
+     *
+     * <p>The last one is the copy for clients that can't read newer batches, see {@link
+     * RemoteLogCompatCopies}. It only exists if such a client read the segment.
      *
      * <p>Note: We need to delete specify remote file instead of delete the whole directory
      * recursive because the list files operation in object storage is a heavy operation.
@@ -142,9 +146,21 @@ public class DefaultRemoteLogStorage implements RemoteLogStorage {
                             segmentDir,
                             remoteLogSegment.remoteLogEndOffset(),
                             WRITER_SNAPSHOT_FILE_SUFFIX);
-            // delete dir at last
+            // the copy for clients that can't read newer batches, if one was made
+            FsPath compatCopy = RemoteLogCompatCopies.copyFile(segmentDir, remoteLogSegment);
+            FsPath compatCopyTemporary =
+                    RemoteLogCompatCopies.temporaryCopyFile(segmentDir, remoteLogSegment);
+            // delete dirs at last
             for (FsPath path :
-                    Arrays.asList(logFile, offsetIndex, timeIndex, writerSnapshot, segmentDir)) {
+                    Arrays.asList(
+                            logFile,
+                            offsetIndex,
+                            timeIndex,
+                            writerSnapshot,
+                            compatCopy,
+                            compatCopyTemporary,
+                            compatCopy.getParent(),
+                            segmentDir)) {
                 remoteLogDir.getFileSystem().delete(path, false);
             }
             LOG.debug("Successful delete log segment and indexes for : {}", remoteLogSegment);

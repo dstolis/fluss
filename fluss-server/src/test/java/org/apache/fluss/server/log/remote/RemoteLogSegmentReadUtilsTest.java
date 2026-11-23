@@ -18,6 +18,7 @@
 package org.apache.fluss.server.log.remote;
 
 import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.record.LogRecordBatchFormat;
 import org.apache.fluss.record.MemoryLogRecords;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -33,6 +35,7 @@ import static org.apache.fluss.record.TestData.DATA1;
 import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
 import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsV3;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link RemoteLogSegmentReadUtils}. */
 class RemoteLogSegmentReadUtilsTest {
@@ -135,6 +138,56 @@ class RemoteLogSegmentReadUtilsTest {
                                         0L,
                                         Integer.MAX_VALUE)))
                 .containsExactly(0L, (long) DATA1.size());
+    }
+
+    @Test
+    void testCopyConvertedBatchesRewritesNewerBatchesAsV0() throws Exception {
+        // a V0 batch with offsets 0-9 followed by the four V3 batches, moved to start at 10
+        ByteArrayOutputStream mixed = new ByteArrayOutputStream();
+        byte[] v0 = toBytes(genMemoryLogRecordsByObject(DATA1));
+        mixed.write(v0, 0, v0.length);
+        for (int i = 0; i < BATCHES; i++) {
+            byte[] v3 =
+                    toBytes(
+                            genMemoryLogRecordsV3(
+                                    RECORDS,
+                                    1L,
+                                    (short) 0,
+                                    i,
+                                    false,
+                                    DATA1.size() + (long) i * RECORDS.size()));
+            mixed.write(v3, 0, v3.length);
+        }
+        byte[] segment = mixed.toByteArray();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        long written =
+                RemoteLogSegmentReadUtils.copyConvertedBatches(
+                        new ByteArrayInputStream(segment),
+                        segment.length,
+                        out,
+                        LogRecordBatchFormat.LOG_MAGIC_VALUE_V2);
+        byte[] copy = out.toByteArray();
+        assertThat(written).isEqualTo(copy.length);
+        assertThat(baseOffsets(copy)).containsExactly(0L, 10L, 13L, 16L, 19L);
+        for (LogRecordBatch batch : MemoryLogRecords.pointToBytes(copy).batches()) {
+            assertThat(batch.magic()).isEqualTo(LogRecordBatchFormat.LOG_MAGIC_VALUE_V0);
+        }
+        // the V0 batch is copied as stored
+        assertThat(Arrays.copyOf(copy, v0.length)).isEqualTo(v0);
+    }
+
+    @Test
+    void testCopyConvertedBatchesFailsOnATruncatedBatch() {
+        byte[] truncated = Arrays.copyOf(segment, segment.length - 1);
+        assertThatThrownBy(
+                        () ->
+                                RemoteLogSegmentReadUtils.copyConvertedBatches(
+                                        new ByteArrayInputStream(truncated),
+                                        truncated.length,
+                                        new ByteArrayOutputStream(),
+                                        LogRecordBatchFormat.LOG_MAGIC_VALUE_V2))
+                .isInstanceOf(EOFException.class);
     }
 
     private byte[] read(int startPosition, long fetchOffset, int maxBytes) throws Exception {
