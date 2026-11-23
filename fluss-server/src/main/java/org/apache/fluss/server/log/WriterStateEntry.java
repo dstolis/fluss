@@ -22,7 +22,10 @@ import org.apache.fluss.record.LogRecordBatch;
 import javax.annotation.Nullable;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
@@ -58,6 +61,18 @@ public class WriterStateEntry {
         this.lastTimestamp = lastTimestamp;
         if (firstBatchMetadata != null) {
             addBatchMetadata(firstBatchMetadata);
+        }
+    }
+
+    /**
+     * Creates an entry that retains the given batches, ordered from the oldest to the newest. Only
+     * the newest {@value NUM_BATCHES_TO_RETAIN} are kept.
+     */
+    public WriterStateEntry(
+            long writerId, short writerEpoch, long lastTimestamp, List<BatchMetadata> batches) {
+        this(writerId, writerEpoch, lastTimestamp, (BatchMetadata) null);
+        for (BatchMetadata batch : batches) {
+            addBatchMetadata(batch);
         }
     }
 
@@ -103,6 +118,11 @@ public class WriterStateEntry {
 
     public long lastBatchTimestamp() {
         return lastTimestamp;
+    }
+
+    /** Returns the retained batches, ordered from the oldest to the newest. */
+    public List<BatchMetadata> batches() {
+        return new ArrayList<>(batchMetadata);
     }
 
     public void addBath(int batchSequence, long lastOffset, int offsetDelta, long timestamp) {
@@ -213,6 +233,47 @@ public class WriterStateEntry {
 
         public long firstOffset() {
             return lastOffset - offsetDelta;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            BatchMetadata that = (BatchMetadata) o;
+            return writerId == that.writerId
+                    && firstSequence == that.firstSequence
+                    && batchSequence == that.batchSequence
+                    && lastOffset == that.lastOffset
+                    && offsetDelta == that.offsetDelta
+                    && timestamp == that.timestamp;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(
+                    writerId, firstSequence, batchSequence, lastOffset, offsetDelta, timestamp);
+        }
+
+        @Override
+        public String toString() {
+            return "BatchMetadata{"
+                    + "writerId="
+                    + writerId
+                    + ", firstSequence="
+                    + firstSequence
+                    + ", batchSequence="
+                    + batchSequence
+                    + ", lastOffset="
+                    + lastOffset
+                    + ", offsetDelta="
+                    + offsetDelta
+                    + ", timestamp="
+                    + timestamp
+                    + '}';
         }
     }
 }

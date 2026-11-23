@@ -17,6 +17,7 @@
 
 package org.apache.fluss.server.log;
 
+import org.apache.fluss.server.log.WriterStateEntry.BatchMetadata;
 import org.apache.fluss.server.log.WriterStateManager.WriterSnapshotEntry;
 import org.apache.fluss.server.log.WriterStateManager.WriterSnapshotMap;
 import org.apache.fluss.utils.json.JsonSerdeTestBase;
@@ -45,7 +46,18 @@ public class WriterSnapshotMapJsonSerdeTest extends JsonSerdeTestBase<WriterSnap
                         new WriterSnapshotEntry(1001, 23, 100, 1000, 2000),
                         new WriterSnapshotEntry(1001, 25, 200, 3000, 4000),
                         new WriterSnapshotEntry(1002, 33, 300, 4000, 5000),
-                        new WriterSnapshotEntry(1003, (short) 2, 10, 14, 400, 4, 6000));
+                        new WriterSnapshotEntry(1003, (short) 2, 10, 14, 400, 4, 6000),
+                        new WriterSnapshotEntry(
+                                1004,
+                                (short) 1,
+                                5,
+                                6,
+                                501,
+                                1,
+                                7000,
+                                Arrays.asList(
+                                        new BatchMetadata(1004, 0, 1, 497, 1, 6800),
+                                        new BatchMetadata(1004, 2, 4, 500, 2, 6900))));
         WriterSnapshotMap map = new WriterSnapshotMap(entries);
         return new WriterSnapshotMap[] {map};
     }
@@ -57,7 +69,10 @@ public class WriterSnapshotMapJsonSerdeTest extends JsonSerdeTestBase<WriterSnap
                     + "{\"writer_id\":1001,\"last_batch_sequence\":23,\"last_batch_base_offset\":100,\"offset_delta\":1000,\"last_batch_timestamp\":2000,\"writer_epoch\":0,\"last_batch_first_sequence\":23},"
                     + "{\"writer_id\":1001,\"last_batch_sequence\":25,\"last_batch_base_offset\":200,\"offset_delta\":3000,\"last_batch_timestamp\":4000,\"writer_epoch\":0,\"last_batch_first_sequence\":25},"
                     + "{\"writer_id\":1002,\"last_batch_sequence\":33,\"last_batch_base_offset\":300,\"offset_delta\":4000,\"last_batch_timestamp\":5000,\"writer_epoch\":0,\"last_batch_first_sequence\":33},"
-                    + "{\"writer_id\":1003,\"last_batch_sequence\":14,\"last_batch_base_offset\":400,\"offset_delta\":4,\"last_batch_timestamp\":6000,\"writer_epoch\":2,\"last_batch_first_sequence\":10}]}"
+                    + "{\"writer_id\":1003,\"last_batch_sequence\":14,\"last_batch_base_offset\":400,\"offset_delta\":4,\"last_batch_timestamp\":6000,\"writer_epoch\":2,\"last_batch_first_sequence\":10},"
+                    + "{\"writer_id\":1004,\"last_batch_sequence\":6,\"last_batch_base_offset\":501,\"offset_delta\":1,\"last_batch_timestamp\":7000,\"writer_epoch\":1,\"last_batch_first_sequence\":5,"
+                    + "\"earlier_batches\":[{\"first_sequence\":0,\"last_sequence\":1,\"last_offset\":497,\"offset_delta\":1,\"timestamp\":6800},"
+                    + "{\"first_sequence\":2,\"last_sequence\":4,\"last_offset\":500,\"offset_delta\":2,\"timestamp\":6900}]}]}"
         };
     }
 

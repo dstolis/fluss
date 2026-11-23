@@ -606,6 +606,62 @@ public class WriterStateManagerTest {
                 .isPresent();
     }
 
+    @Test
+    void testEveryRetainedBatchSurvivesSnapshotReload() throws Exception {
+        // batches A, B and C are stored, but the writer never got their responses
+        appendV3(writerId, (short) 0, 0, 2, 0L, true);
+        appendV3(writerId, (short) 0, 2, 2, 2L, true);
+        appendV3(writerId, (short) 0, 4, 2, 4L, true);
+        stateManager.takeSnapshot();
+
+        WriterStateManager reloaded =
+                new WriterStateManager(
+                        tableBucket,
+                        logDir,
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
+        reloaded.truncateAndReload(0L, 6L, 0L);
+        WriterStateEntry entry = reloaded.lastEntry(writerId).get();
+
+        // a retry of A after a restart still gets A's offsets, not OutOfOrderSequence
+        Optional<WriterStateEntry.BatchMetadata> batchA =
+                entry.findDuplicateBatch(batchV3(writerId, (short) 0, 0, 2, 0L, true));
+        assertThat(batchA).isPresent();
+        assertThat(batchA.get().firstOffset()).isEqualTo(0L);
+        assertThat(batchA.get().lastOffset).isEqualTo(1L);
+        Optional<WriterStateEntry.BatchMetadata> batchB =
+                entry.findDuplicateBatch(batchV3(writerId, (short) 0, 2, 2, 2L, true));
+        assertThat(batchB).isPresent();
+        assertThat(batchB.get().firstOffset()).isEqualTo(2L);
+        assertThat(entry.firstBatchSequence()).isEqualTo(1);
+        assertThat(entry.lastBatchSequence()).isEqualTo(5);
+
+        // the writer continues right after C
+        WriterAppendInfo appendInfo = reloaded.prepareUpdate(writerId);
+        appendInfo.append(batchV3(writerId, (short) 0, 6, 1, 6L, true), false, true);
+    }
+
+    @Test
+    void testSnapshotKeepsAtMostTheRetainedBatches() throws Exception {
+        for (int i = 0; i < 7; i++) {
+            appendV3(writerId, (short) 0, i, 1, i, true);
+        }
+        stateManager.takeSnapshot();
+
+        WriterStateManager reloaded =
+                new WriterStateManager(
+                        tableBucket,
+                        logDir,
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
+        reloaded.truncateAndReload(0L, 7L, 0L);
+        WriterStateEntry entry = reloaded.lastEntry(writerId).get();
+        assertThat(entry.firstBatchSequence()).isEqualTo(2);
+        assertThat(entry.lastBatchSequence()).isEqualTo(6);
+        assertThat(entry.findDuplicateBatch(batchV3(writerId, (short) 0, 1, 1, 1L, true)))
+                .isNotPresent();
+        assertThat(entry.findDuplicateBatch(batchV3(writerId, (short) 0, 2, 1, 2L, true)))
+                .isPresent();
+    }
+
     private void appendV3(
             long writerId,
             short writerEpoch,
