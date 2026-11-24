@@ -99,6 +99,7 @@ import org.apache.fluss.exception.UnknownScannerIdException;
 import org.apache.fluss.exception.UnknownServerException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
 import org.apache.fluss.exception.UnknownWriterIdException;
+import org.apache.fluss.exception.UnreadableClusterFeatureLevelsException;
 import org.apache.fluss.exception.UnsupportedVersionException;
 
 import org.slf4j.Logger;
@@ -324,7 +325,11 @@ public enum Errors {
     INVALID_CLUSTER_FEATURE_UPDATE(
             81,
             "The requested change of the cluster feature levels is not valid.",
-            InvalidClusterFeatureUpdateException::new);
+            InvalidClusterFeatureUpdateException::new),
+    UNREADABLE_CLUSTER_FEATURE_LEVELS(
+            82,
+            "The stored cluster feature levels can't be read.",
+            UnreadableClusterFeatureLevelsException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 

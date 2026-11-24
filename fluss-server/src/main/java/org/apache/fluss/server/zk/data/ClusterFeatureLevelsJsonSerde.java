@@ -55,10 +55,18 @@ public class ClusterFeatureLevelsJsonSerde
 
     @Override
     public Map<String, Integer> deserialize(JsonNode node) {
+        JsonNode levelsNode = node.get(LEVELS);
+        if (levelsNode == null || !levelsNode.isObject()) {
+            throw new IllegalArgumentException("no \"" + LEVELS + "\" object");
+        }
         Map<String, Integer> levels = new TreeMap<>();
-        Iterator<Map.Entry<String, JsonNode>> fields = node.get(LEVELS).fields();
+        Iterator<Map.Entry<String, JsonNode>> fields = levelsNode.fields();
         while (fields.hasNext()) {
             Map.Entry<String, JsonNode> field = fields.next();
+            if (!field.getValue().isInt()) {
+                throw new IllegalArgumentException(
+                        "the level of " + field.getKey() + " is not a number");
+            }
             levels.put(field.getKey(), field.getValue().asInt());
         }
         return levels;

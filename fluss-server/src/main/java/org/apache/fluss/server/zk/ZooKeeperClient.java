@@ -1760,8 +1760,18 @@ public class ZooKeeperClient implements AutoCloseable {
                 .forPath(path, data);
     }
 
+    /** Returns the levels every tablet server that is running and reported them has applied. */
+    public Map<Integer, AppliedClusterFeatures> getAllAppliedClusterFeatures() throws Exception {
+        List<String> reported = getChildren(ZkData.TabletServerFeatureProgressZNode.parentPath());
+        int[] ids = new int[reported.size()];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = Integer.parseInt(reported.get(i));
+        }
+        return getAppliedClusterFeatures(ids);
+    }
+
     /**
-     * Reads the cluster feature levels the given tablet servers have applied. Servers that have not
+     * Returns the levels the given tablet servers reported as applied. Servers that have not
      * reported any, for example because they run a version without cluster features, are left out.
      */
     public Map<Integer, AppliedClusterFeatures> getAppliedClusterFeatures(int[] tabletServerIds)

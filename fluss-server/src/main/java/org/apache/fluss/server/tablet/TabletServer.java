@@ -40,6 +40,7 @@ import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.authorizer.AuthorizerLoader;
 import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.MetadataManager;
+import org.apache.fluss.server.feature.AppliedClusterFeatureLevelsFile;
 import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.feature.ClusterFeaturesWatcher;
 import org.apache.fluss.server.feature.FinalizedClusterFeatures;
@@ -83,7 +84,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -258,6 +258,12 @@ public class TabletServer extends ServerBase {
             this.metadataCache = new TabletServerMetadataCache(metadataManager);
 
             this.localDiskManager = LocalDiskManager.create(conf);
+            // before loading any data: never start below a level applied before, see
+            // ClusterFeatures#levelsToStartWith
+            VersionedData<ClusterFeatureLevels> startLevels =
+                    ClusterFeatures.levelsToStartWith(
+                            zkClient::getClusterFeatureLevels,
+                            AppliedClusterFeatureLevelsFile.read(localDiskManager.dataDirs()));
             this.logManager =
                     LogManager.create(
                             conf,
@@ -329,17 +335,19 @@ public class TabletServer extends ServerBase {
             // and read them again in the background when a level the watch has not applied yet is
             // asked for
             FinalizedClusterFeatures clusterFeatures = replicaManager.getClusterFeatures();
-            Optional<VersionedData<Map<String, Integer>>> storedLevels =
-                    zkClient.getClusterFeatureLevels();
-            if (storedLevels.isPresent()) {
-                clusterFeatures.apply(
-                        ClusterFeatureLevels.fromMap(storedLevels.get().data()),
-                        storedLevels.get().zkVersion());
-            }
+            clusterFeatures.apply(startLevels.data(), startLevels.zkVersion());
+            AppliedClusterFeatureLevelsFile.write(
+                    localDiskManager.dataDirs(), clusterFeatures.levels());
             clusterFeatures.setStoredLevelsReader(zkClient::getClusterFeatureLevels, ioExecutor);
-            // report the applied levels, so the coordinator can show who lags behind a raise
+            // keep the applied levels on disk, and report them, so the coordinator can show who
+            // lags behind a raise
             clusterFeatures.setAppliedListener(
-                    () -> ioExecutor.execute(this::reportAppliedClusterFeatures));
+                    () ->
+                            ioExecutor.execute(
+                                    () -> {
+                                        keepAppliedClusterFeatures();
+                                        reportAppliedClusterFeatures();
+                                    }));
             this.clusterFeaturesWatcher =
                     new ClusterFeaturesWatcher(zkClient, replicaManager.getClusterFeatures(), this);
             clusterFeaturesWatcher.start();
@@ -427,6 +435,15 @@ public class TabletServer extends ServerBase {
      * Reports the cluster feature levels this server has applied in ZooKeeper. A failure is only
      * logged: the report is informational, and the next change or ZooKeeper session reports again.
      */
+    private void keepAppliedClusterFeatures() {
+        ClusterFeatureLevels levels = replicaManager.getClusterFeatures().levels();
+        try {
+            AppliedClusterFeatureLevelsFile.write(localDiskManager.dataDirs(), levels);
+        } catch (Exception e) {
+            LOG.warn("Failed to keep the applied cluster feature levels {} on disk.", levels, e);
+        }
+    }
+
     private void reportAppliedClusterFeatures() {
         FinalizedClusterFeatures clusterFeatures = replicaManager.getClusterFeatures();
         Map<String, Integer> levels = new TreeMap<>();

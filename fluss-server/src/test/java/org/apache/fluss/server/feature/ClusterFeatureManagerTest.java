@@ -27,6 +27,7 @@ import org.apache.fluss.server.metadata.TabletServerResource;
 import org.apache.fluss.server.zk.NOPErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
+import org.apache.fluss.server.zk.data.AppliedClusterFeatures;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
 import org.apache.fluss.server.zk.data.DatabaseRegistration;
@@ -121,6 +122,21 @@ class ClusterFeatureManagerTest {
         ClusterFeatureManager.checkCanStartAt(ClusterFeatureLevels.latest(), onlyLevel3);
         ClusterFeatureManager.checkCanStartAt(
                 ClusterFeatureLevels.baseline(), ClusterFeatures.supportedFeatures());
+    }
+
+    @Test
+    void testLostLevelsAreNotStartedAgainBelowWhatServersApplied() throws Exception {
+        // the node was lost after a raise, while a tablet server that applied level 3 runs
+        zkClient.registerDatabase(
+                "fluss", DatabaseRegistration.of(DatabaseDescriptor.builder().build()));
+        zkClient.reportAppliedClusterFeatures(
+                3, new AppliedClusterFeatures(1, Collections.singletonMap(FEATURE, 3)));
+        int epochZkVersion = becomeLeader();
+
+        assertThatThrownBy(() -> new ClusterFeatureManager(zkClient).initialize(epochZkVersion))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Restore the node");
+        assertThat(zkClient.getClusterFeatureLevels()).isEmpty();
     }
 
     @Test

@@ -19,12 +19,19 @@ package org.apache.fluss.server.feature;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.exception.IllegalConfigurationException;
+import org.apache.fluss.exception.UnreadableClusterFeatureLevelsException;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
+import org.apache.fluss.server.zk.data.ZkData;
+import org.apache.fluss.utils.function.SupplierWithException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -35,6 +42,8 @@ import java.util.Optional;
 /** The cluster features a server registers and checks, see {@link ClusterFeature}. */
 @Internal
 public final class ClusterFeatures {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ClusterFeatures.class);
 
     private ClusterFeatures() {}
 
@@ -114,7 +123,13 @@ public final class ClusterFeatures {
      * join the cluster.
      */
     public static void checkSupportsFinalizedFeatures(ZooKeeperClient zkClient) throws Exception {
-        Optional<VersionedData<Map<String, Integer>>> stored = zkClient.getClusterFeatureLevels();
+        Optional<VersionedData<Map<String, Integer>>> stored;
+        try {
+            stored = zkClient.getClusterFeatureLevels();
+        } catch (UnreadableClusterFeatureLevelsException e) {
+            // decided by levelsToStartWith, which knows the levels this server applied before
+            return;
+        }
         if (!stored.isPresent()) {
             return;
         }
@@ -126,5 +141,60 @@ public final class ClusterFeatures {
                                     + "Upgrade it to a version that supports them.",
                             unsupported));
         }
+    }
+
+    /**
+     * The levels a tablet server starts with, with their feature epoch: the stored levels, unless
+     * they would lower a level the server applied before. Data written at that level may be on its
+     * disks, so the server refuses to start and tells the operator to restore the stored levels,
+     * which can only go down if their ZooKeeper node was lost, rolled back or edited by hand.
+     *
+     * <p>If the stored levels can't be read, a server that applied levels before starts with those,
+     * so a rolling restart does not turn into an outage while the node is repaired.
+     *
+     * @param storedLevels reads the stored levels and their epoch, absent if none are stored
+     * @param appliedBefore the levels this server applied before it was restarted, if any
+     */
+    public static VersionedData<ClusterFeatureLevels> levelsToStartWith(
+            SupplierWithException<Optional<VersionedData<Map<String, Integer>>>, Exception>
+                    storedLevels,
+            Optional<ClusterFeatureLevels> appliedBefore)
+            throws Exception {
+        Optional<VersionedData<Map<String, Integer>>> stored;
+        try {
+            stored = storedLevels.get();
+        } catch (UnreadableClusterFeatureLevelsException e) {
+            if (!appliedBefore.isPresent()) {
+                throw e;
+            }
+            LOG.error(
+                    "{} Starting with the levels this tablet server applied before, {}.",
+                    e.getMessage(),
+                    appliedBefore.get());
+            return new VersionedData<>(appliedBefore.get(), FinalizedClusterFeatures.NO_EPOCH);
+        }
+        ClusterFeatureLevels before = appliedBefore.orElse(ClusterFeatureLevels.baseline());
+        ClusterFeatureLevels current =
+                stored.isPresent()
+                        ? ClusterFeatureLevels.fromMap(stored.get().data())
+                        : ClusterFeatureLevels.baseline();
+        if (!current.max(before).equals(current)) {
+            throw new IllegalStateException(
+                    String.format(
+                            "This tablet server applied the cluster feature levels %s before, but "
+                                    + "the levels stored at %s under the ZooKeeper root are %s. "
+                                    + "Levels never go down, because data written at a level may "
+                                    + "exist, so the stored levels were lost, rolled back or "
+                                    + "edited. Restore the node to at least %s.",
+                            before,
+                            ZkData.ClusterFeaturesZNode.path(),
+                            stored.isPresent() ? current : "missing",
+                            new String(
+                                    ZkData.ClusterFeaturesZNode.encode(before.toMap()),
+                                    StandardCharsets.UTF_8)));
+        }
+        return new VersionedData<>(
+                current,
+                stored.isPresent() ? stored.get().zkVersion() : FinalizedClusterFeatures.NO_EPOCH);
     }
 }

@@ -18,6 +18,7 @@
 package org.apache.fluss.rpc.protocol.feature;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.rpc.protocol.ApiKeys;
 
@@ -194,25 +195,29 @@ public final class ApiFeatureContracts {
     }
 
     /** The levels of a feature that readers of the versions of one API can decode. */
-    private static final class Contract {
+    @VisibleForTesting
+    static final class Contract {
         private final ApiKeys api;
         private final ClusterFeature feature;
         private final Access access;
         // API version -> highest level the API carries from that version on
         private final NavigableMap<Short, Integer> levelsSince = new TreeMap<>();
 
-        private Contract(ApiKeys api, ClusterFeature feature, Access access) {
+        @VisibleForTesting
+        Contract(ApiKeys api, ClusterFeature feature, Access access) {
             this.api = api;
             this.feature = feature;
             this.access = access;
         }
 
-        private Contract since(short apiVersion, int level) {
+        @VisibleForTesting
+        Contract since(short apiVersion, int level) {
             levelsSince.put(apiVersion, level);
             return this;
         }
 
-        private void validate() {
+        @VisibleForTesting
+        void validate() {
             checkState(
                     levelsSince.containsKey(api.lowestSupportedVersion),
                     "The contract of %s must start at version %s.",
@@ -237,6 +242,18 @@ public final class ApiFeatureContracts {
                         feature.latestLevel());
                 previous = entry.getValue();
             }
+            // Replicas copy data as stored, so they need a version that reads every level, and so
+            // do readers that should get data of the latest level without a conversion. A release
+            // can't add a level without a read version for it.
+            checkState(
+                    access != Access.READ || previous == feature.latestLevel(),
+                    "%s reads %s up to level %s, but the latest level is %s. Add a %s version "
+                            + "that reads the latest level.",
+                    api,
+                    feature.featureName(),
+                    previous,
+                    feature.latestLevel(),
+                    api);
         }
     }
 }

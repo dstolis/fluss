@@ -26,7 +26,9 @@ import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
+import org.apache.fluss.server.zk.data.AppliedClusterFeatures;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
+import org.apache.fluss.server.zk.data.ZkData;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 
 import org.slf4j.Logger;
@@ -34,6 +36,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -95,6 +98,7 @@ public class ClusterFeatureManager {
         ClusterFeatureLevels initial =
                 newCluster ? ClusterFeatureLevels.latest() : ClusterFeatureLevels.baseline();
         checkCanStartAt(initial, ClusterFeatures.supportedFeatures());
+        checkNoTabletServerAppliedMore(initial, zkClient.getAllAppliedClusterFeatures());
         try {
             zkClient.createClusterFeatureLevels(initial.toMap(), coordinatorEpochZkVersion);
         } catch (KeeperException.NodeExistsException e) {
@@ -126,6 +130,41 @@ public class ClusterFeatureManager {
                                     + "levels: upgrade it to a version that supports them first, "
                                     + "raise the levels, then upgrade to this version.",
                             initial, unsupported));
+        }
+    }
+
+    /**
+     * Fails if a running tablet server reports a level above the given initial levels. That happens
+     * when the stored levels of a cluster were lost, for example by a ZooKeeper restore: starting
+     * again at the baseline would lower a level that data was written at. The operator must restore
+     * the stored levels instead.
+     */
+    @VisibleForTesting
+    static void checkNoTabletServerAppliedMore(
+            ClusterFeatureLevels initial, Map<Integer, AppliedClusterFeatures> appliedByServer) {
+        Map<Integer, ClusterFeatureLevels> higher = new TreeMap<>();
+        ClusterFeatureLevels highest = initial;
+        for (Map.Entry<Integer, AppliedClusterFeatures> entry : appliedByServer.entrySet()) {
+            ClusterFeatureLevels applied = ClusterFeatureLevels.fromMap(entry.getValue().levels());
+            if (!initial.max(applied).equals(initial)) {
+                higher.put(entry.getKey(), applied);
+                highest = highest.max(applied);
+            }
+        }
+        if (!higher.isEmpty()) {
+            throw new IllegalStateException(
+                    String.format(
+                            "The cluster feature levels are not stored at %s under the ZooKeeper "
+                                    + "root, but tablet servers %s applied higher levels than "
+                                    + "%s. The node was lost, for example by a ZooKeeper restore, "
+                                    + "and starting again would lower a level. Restore the node, "
+                                    + "for example to %s.",
+                            ZkData.ClusterFeaturesZNode.path(),
+                            higher,
+                            initial,
+                            new String(
+                                    ZkData.ClusterFeaturesZNode.encode(highest.toMap()),
+                                    StandardCharsets.UTF_8)));
         }
     }
 

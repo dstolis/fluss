@@ -17,10 +17,12 @@
 
 package org.apache.fluss.server.zk.data;
 
+import org.apache.fluss.exception.UnreadableClusterFeatureLevelsException;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.Resource;
 import org.apache.fluss.security.acl.ResourceType;
 import org.apache.fluss.server.zk.data.lake.LakeTable;
@@ -910,6 +912,10 @@ public final class ZkData {
      * <p>/cluster/features
      */
     public static final class ClusterFeaturesZNode {
+
+        /** The file a tablet server keeps the levels it applied in, in each of its data dirs. */
+        public static final String APPLIED_LEVELS_FILE_NAME = "cluster_feature_levels.json";
+
         public static String path() {
             return "/cluster/features";
         }
@@ -918,8 +924,30 @@ public final class ZkData {
             return JsonSerdeUtils.writeValueAsBytes(levels, ClusterFeatureLevelsJsonSerde.INSTANCE);
         }
 
+        /**
+         * Decodes the stored levels.
+         *
+         * @throws UnreadableClusterFeatureLevelsException if the node holds no valid levels, for
+         *     example after a hand edit, with what the operator must do to repair it
+         */
         public static Map<String, Integer> decode(byte[] json) {
-            return JsonSerdeUtils.readValue(json, ClusterFeatureLevelsJsonSerde.INSTANCE);
+            try {
+                return JsonSerdeUtils.readValue(json, ClusterFeatureLevelsJsonSerde.INSTANCE);
+            } catch (Exception e) {
+                throw new UnreadableClusterFeatureLevelsException(
+                        String.format(
+                                "The cluster feature levels stored at %s under the ZooKeeper root "
+                                        + "can't be read (%s). Set the node to the levels the "
+                                        + "cluster had, for example %s. A tablet server logs the "
+                                        + "levels it applied, and keeps them in %s in its data "
+                                        + "directories.",
+                                path(),
+                                e.getMessage(),
+                                new String(
+                                        encode(ClusterFeatureLevels.latest().toMap()),
+                                        StandardCharsets.UTF_8),
+                                APPLIED_LEVELS_FILE_NAME));
+            }
         }
     }
 

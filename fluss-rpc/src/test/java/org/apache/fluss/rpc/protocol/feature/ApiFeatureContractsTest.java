@@ -223,4 +223,30 @@ class ApiFeatureContractsTest {
     private static PbClusterFeatureLevel reported(String name, int level) {
         return new PbClusterFeatureLevel().setName(name).setLevel(level);
     }
+
+    @Test
+    void testReadContractMustCoverTheLatestLevel() {
+        // a release whose latest level has no FETCH_LOG version to read it: followers could not
+        // replicate data of that level, so the contract is rejected
+        ApiFeatureContracts.Contract withoutLatestReadVersion =
+                new ApiFeatureContracts.Contract(
+                                ApiKeys.FETCH_LOG,
+                                LOG_RECORD_BATCH_VERSION,
+                                ApiFeatureContracts.Access.READ)
+                        .since((short) 0, LOG_RECORD_BATCH_VERSION.baselineLevel());
+        assertThatThrownBy(withoutLatestReadVersion::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("reads log.record-batch.version up to level 2")
+                .hasMessageContaining("the latest level is 3");
+
+        // a write API may stop below the latest level: writers just don't use the newer level
+        assertThatCode(
+                        new ApiFeatureContracts.Contract(
+                                                ApiKeys.PRODUCE_LOG,
+                                                LOG_RECORD_BATCH_VERSION,
+                                                ApiFeatureContracts.Access.WRITE)
+                                        .since((short) 0, LOG_RECORD_BATCH_VERSION.baselineLevel())
+                                ::validate)
+                .doesNotThrowAnyException();
+    }
 }
