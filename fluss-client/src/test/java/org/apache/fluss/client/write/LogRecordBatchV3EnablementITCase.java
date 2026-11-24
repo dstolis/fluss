@@ -1,0 +1,161 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.fluss.client.write;
+
+import org.apache.fluss.client.Connection;
+import org.apache.fluss.client.ConnectionFactory;
+import org.apache.fluss.client.admin.Admin;
+import org.apache.fluss.client.table.Table;
+import org.apache.fluss.client.table.writer.AppendResult;
+import org.apache.fluss.client.table.writer.AppendWriter;
+import org.apache.fluss.config.ConfigOptions;
+import org.apache.fluss.config.Configuration;
+import org.apache.fluss.metadata.DatabaseDescriptor;
+import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TableDescriptor;
+import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.server.log.LogSegment;
+import org.apache.fluss.server.testutils.FlussClusterExtension;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+
+import static org.apache.fluss.record.TestData.DATA1_SCHEMA;
+import static org.apache.fluss.testutils.DataTestUtils.row;
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Enables log record batches of magic V3 while a writer is running. Neither enabling them nor a
+ * tablet server restart afterwards may break the writer.
+ */
+class LogRecordBatchV3EnablementITCase {
+
+    @RegisterExtension
+    static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
+            FlussClusterExtension.builder()
+                    .setNumOfTabletServers(3)
+                    // like an upgraded cluster, the test raises the level under a running writer
+                    .setBaselineClusterFeatureLevels(true)
+                    .build();
+
+    private static final TablePath TABLE_PATH = TablePath.of("test_db", "v3_enablement_table");
+    private static final int BUCKETS = 3;
+    private static final int ROWS_PER_ROUND = 30;
+
+    @Test
+    void testRunningWriterSurvivesEnablingV3AndTabletServerRestart() throws Exception {
+        try (Connection conn =
+                ConnectionFactory.createConnection(FLUSS_CLUSTER_EXTENSION.getClientConfig())) {
+            Admin admin = conn.getAdmin();
+            admin.createDatabase(TABLE_PATH.getDatabaseName(), DatabaseDescriptor.EMPTY, true)
+                    .get();
+            admin.createTable(
+                            TABLE_PATH,
+                            TableDescriptor.builder()
+                                    .schema(DATA1_SCHEMA)
+                                    .distributedBy(BUCKETS, "a")
+                                    // one replica, so a restarted server leads its bucket again
+                                    .property(ConfigOptions.TABLE_REPLICATION_FACTOR, 1)
+                                    .build(),
+                            false)
+                    .get();
+            long tableId = admin.getTableInfo(TABLE_PATH).get().getTableId();
+            List<TableBucket> buckets = new ArrayList<>();
+            Set<Integer> leaders = new HashSet<>();
+            for (int bucket = 0; bucket < BUCKETS; bucket++) {
+                TableBucket tb = new TableBucket(tableId, bucket);
+                FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(tb);
+                buckets.add(tb);
+                leaders.add(FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(tb));
+            }
+            // the writer needs connections to more than one tablet server
+            assertThat(leaders).hasSizeGreaterThan(1);
+
+            try (Table table = conn.getTable(TABLE_PATH)) {
+                AppendWriter writer = table.newAppend().createWriter();
+                // connects the writer to every leader while only the older formats are allowed
+                writeToAllBuckets(writer, 0);
+                for (TableBucket tb : buckets) {
+                    assertThat(
+                                    FLUSS_CLUSTER_EXTENSION
+                                            .waitAndGetLeaderReplica(tb)
+                                            .getLocalLogEndOffset())
+                            .isPositive();
+                }
+
+                FLUSS_CLUSTER_EXTENSION.finalizeClusterFeature(
+                        ClusterFeature.LOG_RECORD_BATCH_VERSION, 3);
+                writeToAllBuckets(writer, 1);
+
+                // The writer reconnects to the restarted leader and keeps its connections to the
+                // other leaders, as during a rolling restart.
+                int restartedServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(buckets.get(0));
+                FLUSS_CLUSTER_EXTENSION.restartTabletServer(restartedServer, new Configuration());
+                for (TableBucket tb : buckets) {
+                    FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(tb);
+                }
+
+                for (int round = 2; round < 6; round++) {
+                    writeToAllBuckets(writer, round);
+                }
+
+                // The writer learned the level from the restarted server and then wrote V3 to
+                // every leader, also over the connections that had negotiated PRODUCE_LOG v1
+                // before the raise: it asked those servers for their API versions again.
+                for (TableBucket tb : buckets) {
+                    assertThat(batchMagics(tb)).as("batch magics of %s", tb).contains((byte) 3);
+                }
+            }
+        }
+    }
+
+    /** The magic of every batch in the local log of the bucket's leader. */
+    private static List<Byte> batchMagics(TableBucket tb) {
+        List<Byte> magics = new ArrayList<>();
+        for (LogSegment segment :
+                FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(tb).getLogTablet().getSegments()) {
+            for (LogRecordBatch batch : segment.getFileLogRecords().batches()) {
+                magics.add(batch.magic());
+            }
+        }
+        return magics;
+    }
+
+    /** Writes rows that spread over all buckets and waits until every row is acknowledged. */
+    private static void writeToAllBuckets(AppendWriter writer, int round) {
+        List<CompletableFuture<AppendResult>> results = new ArrayList<>();
+        for (int i = 0; i < ROWS_PER_ROUND; i++) {
+            results.add(writer.append(row(i, "round-" + round)));
+        }
+        writer.flush();
+        for (CompletableFuture<AppendResult> result : results) {
+            assertThat(result)
+                    .as("a write of round %s", round)
+                    .succeedsWithin(Duration.ofMinutes(1));
+        }
+    }
+}

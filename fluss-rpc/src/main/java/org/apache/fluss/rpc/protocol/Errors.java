@@ -56,6 +56,7 @@ import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.InvalidTargetColumnException;
 import org.apache.fluss.exception.InvalidTimestampException;
 import org.apache.fluss.exception.InvalidUpdateVersionException;
+import org.apache.fluss.exception.InvalidWriterEpochException;
 import org.apache.fluss.exception.KvSnapshotNotExistException;
 import org.apache.fluss.exception.KvStorageException;
 import org.apache.fluss.exception.LakeStorageNotConfiguredException;
@@ -329,7 +330,11 @@ public enum Errors {
     UNREADABLE_CLUSTER_FEATURE_LEVELS(
             82,
             "The stored cluster feature levels can't be read.",
-            UnreadableClusterFeatureLevelsException::new);
+            UnreadableClusterFeatureLevelsException::new),
+    INVALID_WRITER_EPOCH_EXCEPTION(
+            83,
+            "The writer epoch of the batch is lower than the current epoch of the writer.",
+            InvalidWriterEpochException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 

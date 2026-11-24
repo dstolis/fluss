@@ -17,6 +17,7 @@
 
 package org.apache.fluss.server.log;
 
+import org.apache.fluss.exception.InvalidWriterEpochException;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.record.LogRecordBatch;
@@ -42,6 +43,8 @@ public class WriterAppendInfo {
     private final TableBucket tableBucket;
     private final WriterStateEntry currentEntry;
     private final WriterStateEntry updatedEntry;
+    // whether a batch in this append moved the writer to a newer epoch
+    private boolean epochBumped;
 
     public WriterAppendInfo(long writerId, TableBucket tableBucket, WriterStateEntry currentEntry) {
         this.writerId = writerId;
@@ -65,14 +68,61 @@ public class WriterAppendInfo {
             boolean isAppendAsLeader,
             SequenceValidation sequenceValidation) {
         LogOffsetMetadata firstOffsetMetadata = new LogOffsetMetadata(batch.baseLogOffset());
-        appendDataBatch(
+        boolean fromOlderEpoch =
+                maybeBumpEpoch(
+                        batch.writerEpoch(),
+                        batch.lastLogOffset(),
+                        isAppendAsLeader,
+                        sequenceValidation);
+        if (fromOlderEpoch) {
+            // A batch of an older epoch that the leader accepted says nothing about the sequence
+            // of the current epoch, so it is neither validated against it nor recorded in it.
+            return;
+        }
+        maybeValidateDataBatch(
                 batch.batchSequence(),
-                firstOffsetMetadata,
-                batch.lastLogOffset(),
                 isWriterInBatchExpired,
+                batch.lastLogOffset(),
                 isAppendAsLeader,
-                batch.commitTimestamp(),
                 sequenceValidation);
+        updatedEntry.addBath(
+                batch.batchSequence(),
+                batch.lastSequence(),
+                batch.lastLogOffset(),
+                (int) (batch.lastLogOffset() - firstOffsetMetadata.getMessageOffset()),
+                batch.commitTimestamp());
+    }
+
+    /**
+     * Rejects a batch from an older writer epoch, and moves the writer to a newer epoch, in which
+     * case the writer restarts its sequence from 0.
+     *
+     * @return whether the batch is from an older epoch and accepted without validation, which only
+     *     happens for followers and log recovery
+     */
+    private boolean maybeBumpEpoch(
+            short batchEpoch,
+            long lastOffset,
+            boolean isAppendAsLeader,
+            SequenceValidation sequenceValidation) {
+        short currentEpoch = updatedEntry.writerEpoch();
+        if (batchEpoch < currentEpoch) {
+            String message =
+                    String.format(
+                            "Writer epoch of writer %s at offset %s in table-bucket %s is %s, "
+                                    + "which is lower than the current epoch %s",
+                            writerId, lastOffset, tableBucket, batchEpoch, currentEpoch);
+            // followers and log recovery keep what the leader already accepted
+            if (!isAppendAsLeader || sequenceValidation == SequenceValidation.WARN_AND_ACCEPT) {
+                LOG.warn("{}. Accepting the persisted batch.", message);
+                return true;
+            }
+            throw new InvalidWriterEpochException(message);
+        } else if (batchEpoch > currentEpoch) {
+            updatedEntry.bumpEpoch(batchEpoch);
+            epochBumped = true;
+        }
+        return false;
     }
 
     public void appendDataBatch(
@@ -144,7 +194,8 @@ public class WriterAppendInfo {
     }
 
     private int currentLastBatchSequence() {
-        return !updatedEntry.isEmpty()
+        // after an epoch bump, the batches of the previous epoch no longer count
+        return !updatedEntry.isEmpty() || epochBumped
                 ? updatedEntry.lastBatchSequence()
                 : currentEntry.lastBatchSequence();
     }

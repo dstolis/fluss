@@ -29,6 +29,7 @@ import org.apache.fluss.row.InternalRow;
 import java.io.IOException;
 import java.util.List;
 
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -139,6 +140,26 @@ abstract class AbstractRowLogWriteBatch<R> extends WriteBatch {
     @Override
     public void abortRecordAppends() {
         recordsBuilder.abort();
+    }
+
+    @Override
+    public boolean hasWriterEpoch() {
+        return recordsBuilder.magic() >= LOG_MAGIC_VALUE_V3;
+    }
+
+    @Override
+    public short writerEpoch() {
+        return recordsBuilder.writerEpoch();
+    }
+
+    @Override
+    public void setWriterEpoch(short writerEpoch) {
+        if (hasWriterEpoch()) {
+            // native writers count one sequence per batch
+            recordsBuilder.setWriterEpochAndSequenceMode(writerEpoch, false);
+        } else {
+            super.setWriterEpoch(writerEpoch);
+        }
     }
 
     @Override

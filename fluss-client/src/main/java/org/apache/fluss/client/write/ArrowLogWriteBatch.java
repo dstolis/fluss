@@ -36,6 +36,9 @@ import javax.annotation.concurrent.NotThreadSafe;
 import java.io.IOException;
 import java.util.List;
 
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -62,6 +65,32 @@ public class ArrowLogWriteBatch extends WriteBatch {
             boolean isHistoricalPartition,
             long createdMs,
             @Nullable LogRecordBatchStatisticsCollector statisticsCollector) {
+        this(
+                tableId,
+                bucketId,
+                bucketCount,
+                physicalTablePath,
+                schemaId,
+                arrowWriter,
+                outputView,
+                isHistoricalPartition,
+                createdMs,
+                statisticsCollector,
+                statisticsCollector != null ? LOG_MAGIC_VALUE_V1 : LOG_MAGIC_VALUE_V0);
+    }
+
+    public ArrowLogWriteBatch(
+            long tableId,
+            int bucketId,
+            int bucketCount,
+            PhysicalTablePath physicalTablePath,
+            int schemaId,
+            ArrowWriter arrowWriter,
+            AbstractPagedOutputView outputView,
+            boolean isHistoricalPartition,
+            long createdMs,
+            @Nullable LogRecordBatchStatisticsCollector statisticsCollector,
+            byte magic) {
         super(
                 tableId,
                 bucketId,
@@ -74,7 +103,7 @@ public class ArrowLogWriteBatch extends WriteBatch {
         this.outputView = outputView;
         this.recordsBuilder =
                 MemoryLogRecordsArrowBuilder.builder(
-                        schemaId, arrowWriter, outputView, true, statisticsCollector);
+                        schemaId, magic, arrowWriter, outputView, true, statisticsCollector);
     }
 
     @Override
@@ -155,5 +184,25 @@ public class ArrowLogWriteBatch extends WriteBatch {
     @Override
     public void abortRecordAppends() {
         recordsBuilder.abort();
+    }
+
+    @Override
+    public boolean hasWriterEpoch() {
+        return recordsBuilder.magic() >= LOG_MAGIC_VALUE_V3;
+    }
+
+    @Override
+    public short writerEpoch() {
+        return recordsBuilder.writerEpoch();
+    }
+
+    @Override
+    public void setWriterEpoch(short writerEpoch) {
+        if (hasWriterEpoch()) {
+            // native writers count one sequence per batch
+            recordsBuilder.setWriterEpochAndSequenceMode(writerEpoch, false);
+        } else {
+            super.setWriterEpoch(writerEpoch);
+        }
     }
 }

@@ -36,8 +36,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
+import static org.apache.fluss.utils.Preconditions.checkState;
 
 /** The abstract write batch contains write callback object to wait write request feedback. */
 @Internal
@@ -64,6 +66,13 @@ public abstract class WriteBatch {
     // Whether this batch targets the historical partition. When true, the original partition name
     // is derived from physicalTablePath.
     private volatile boolean isHistoricalPartition;
+
+    // whether the batch was sent and its request has not been answered yet
+    private volatile boolean awaitingResponse;
+
+    // whether a request carrying the batch failed without an answer, for example on a timeout or a
+    // lost connection, so the batch may or may not have been written
+    private volatile boolean outcomeUnknown;
 
     protected boolean reopened;
     protected int recordCount;
@@ -159,6 +168,65 @@ public abstract class WriteBatch {
     public abstract int batchSequence();
 
     public abstract void abortRecordAppends();
+
+    /**
+     * Whether this batch carries a writer epoch in its header, which only log record batches of
+     * magic V3 do. Batches without one are read by the server with epoch {@code NO_WRITER_EPOCH}.
+     */
+    /** Marks that a request carrying this batch was sent and waits for its answer. */
+    void markAwaitingResponse() {
+        awaitingResponse = true;
+    }
+
+    /**
+     * Marks that the request carrying this batch was answered. Without an answer from the server,
+     * the outcome of the batch stays unknown from then on.
+     */
+    void markAnswered(boolean answeredByServer) {
+        awaitingResponse = false;
+        if (!answeredByServer) {
+            outcomeUnknown = true;
+        }
+    }
+
+    /**
+     * Marks that the batch may have been written although the server answered with an error, for
+     * example because the leader appended it and then timed out waiting for its followers.
+     */
+    void markOutcomeUnknown() {
+        outcomeUnknown = true;
+    }
+
+    /** Whether the batch was sent and its request has not been answered yet. */
+    boolean isAwaitingResponse() {
+        return awaitingResponse;
+    }
+
+    /** Whether the batch may or may not have been written, see {@link #markAnswered}. */
+    boolean isOutcomeUnknown() {
+        return outcomeUnknown;
+    }
+
+    public boolean hasWriterEpoch() {
+        return false;
+    }
+
+    /** The writer epoch of this batch, {@code NO_WRITER_EPOCH} if it does not carry one. */
+    public short writerEpoch() {
+        return NO_WRITER_EPOCH;
+    }
+
+    /**
+     * Sets the writer epoch of this batch. Batches without a writer epoch in their header only
+     * accept {@code NO_WRITER_EPOCH}.
+     */
+    public void setWriterEpoch(short writerEpoch) {
+        checkState(
+                writerEpoch == NO_WRITER_EPOCH,
+                "Batch for table path %s has no writer epoch, but epoch %s was set.",
+                physicalTablePath,
+                writerEpoch);
+    }
 
     public boolean hasBatchSequence() {
         return batchSequence() != NO_BATCH_SEQUENCE;

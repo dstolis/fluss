@@ -56,6 +56,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.utils.FlussPaths.WRITER_SNAPSHOT_FILE_SUFFIX;
 import static org.apache.fluss.utils.FlussPaths.writerSnapshotFile;
@@ -434,18 +435,24 @@ public class WriterStateManager {
             WriterSnapshotMap writerSnapshotMap = WriterSnapshotMap.fromJsonBytes(json);
 
             List<WriterStateEntry> writerIdEntries = new ArrayList<>();
-            writerSnapshotMap.snapshotEntries.forEach(
-                    snapshotEntry ->
-                            writerIdEntries.add(
-                                    new WriterStateEntry(
-                                            snapshotEntry.writerId,
-                                            snapshotEntry.lastBatchTimestamp,
-                                            new WriterStateEntry.BatchMetadata(
-                                                    snapshotEntry.writerId,
-                                                    snapshotEntry.lastBatchSequence,
-                                                    snapshotEntry.lastBatchBaseOffset,
-                                                    snapshotEntry.lastBatchOffsetDelta,
-                                                    snapshotEntry.lastBatchTimestamp))));
+            for (WriterSnapshotEntry snapshotEntry : writerSnapshotMap.snapshotEntries) {
+                List<WriterStateEntry.BatchMetadata> batches =
+                        new ArrayList<>(snapshotEntry.earlierBatches);
+                batches.add(
+                        new WriterStateEntry.BatchMetadata(
+                                snapshotEntry.writerId,
+                                snapshotEntry.lastBatchFirstSequence,
+                                snapshotEntry.lastBatchSequence,
+                                snapshotEntry.lastBatchBaseOffset,
+                                snapshotEntry.lastBatchOffsetDelta,
+                                snapshotEntry.lastBatchTimestamp));
+                writerIdEntries.add(
+                        new WriterStateEntry(
+                                snapshotEntry.writerId,
+                                snapshotEntry.writerEpoch,
+                                snapshotEntry.lastBatchTimestamp,
+                                batches));
+            }
             return writerIdEntries;
         } catch (IOException | UncheckedIOException e) {
             throw new CorruptSnapshotException("Failed to read snapshot file " + file, e);
@@ -456,14 +463,21 @@ public class WriterStateManager {
             throws IOException {
         List<WriterSnapshotEntry> snapshotEntries = new ArrayList<>();
         entries.forEach(
-                (writerId, writerStateEntry) ->
-                        snapshotEntries.add(
-                                new WriterSnapshotEntry(
-                                        writerId,
-                                        writerStateEntry.lastBatchSequence(),
-                                        writerStateEntry.lastDataOffset(),
-                                        writerStateEntry.lastOffsetDelta(),
-                                        writerStateEntry.lastBatchTimestamp())));
+                (writerId, writerStateEntry) -> {
+                    List<WriterStateEntry.BatchMetadata> batches = writerStateEntry.batches();
+                    snapshotEntries.add(
+                            new WriterSnapshotEntry(
+                                    writerId,
+                                    writerStateEntry.writerEpoch(),
+                                    writerStateEntry.lastBatchFirstSequence(),
+                                    writerStateEntry.lastBatchSequence(),
+                                    writerStateEntry.lastDataOffset(),
+                                    writerStateEntry.lastOffsetDelta(),
+                                    writerStateEntry.lastBatchTimestamp(),
+                                    batches.isEmpty()
+                                            ? Collections.emptyList()
+                                            : batches.subList(0, batches.size() - 1)));
+                });
         byte[] jsonBytes = new WriterSnapshotMap(snapshotEntries).toJsonBytes();
 
         ByteBuffer buffer = ByteBuffer.allocate(jsonBytes.length);
@@ -490,7 +504,20 @@ public class WriterStateManager {
         private static final String LAST_BATCH_BASE_OFFSET_FILED = "last_batch_base_offset";
         private static final String LAST_BATCH_OFFSET_DELTA_FILED = "offset_delta";
         private static final String LAST_BATCH_TIMESTAMP_FILED = "last_batch_timestamp";
-        private static final int WRITER_ID_SNAPSHOT_VERSION = 1;
+        private static final String WRITER_EPOCH_FILED = "writer_epoch";
+        private static final String LAST_BATCH_FIRST_SEQUENCE_FILED = "last_batch_first_sequence";
+        private static final String EARLIER_BATCHES_FILED = "earlier_batches";
+        private static final String FIRST_SEQUENCE_FILED = "first_sequence";
+        private static final String LAST_SEQUENCE_FILED = "last_sequence";
+        private static final String LAST_OFFSET_FILED = "last_offset";
+        private static final String TIMESTAMP_FILED = "timestamp";
+        // Version 2 adds writer_epoch, last_batch_first_sequence and earlier_batches. The last
+        // batch
+        // keeps its version 1 fields, and the other retained batches go to earlier_batches, so a
+        // retry of any of them still gets its original offsets after a restart. Older servers
+        // ignore the new fields. Snapshots without them are read as epoch 0 and a single last
+        // batch whose first and last sequence are equal.
+        private static final int WRITER_ID_SNAPSHOT_VERSION = 2;
 
         @Override
         public void serialize(WriterSnapshotMap writerSnapshotMap, JsonGenerator generator)
@@ -510,6 +537,23 @@ public class WriterStateManager {
                 generator.writeNumberField(
                         LAST_BATCH_OFFSET_DELTA_FILED, entry.lastBatchOffsetDelta);
                 generator.writeNumberField(LAST_BATCH_TIMESTAMP_FILED, entry.lastBatchTimestamp);
+                generator.writeNumberField(WRITER_EPOCH_FILED, entry.writerEpoch);
+                generator.writeNumberField(
+                        LAST_BATCH_FIRST_SEQUENCE_FILED, entry.lastBatchFirstSequence);
+                if (!entry.earlierBatches.isEmpty()) {
+                    generator.writeArrayFieldStart(EARLIER_BATCHES_FILED);
+                    for (WriterStateEntry.BatchMetadata batch : entry.earlierBatches) {
+                        generator.writeStartObject();
+                        generator.writeNumberField(FIRST_SEQUENCE_FILED, batch.firstSequence);
+                        generator.writeNumberField(LAST_SEQUENCE_FILED, batch.batchSequence);
+                        generator.writeNumberField(LAST_OFFSET_FILED, batch.lastOffset);
+                        generator.writeNumberField(
+                                LAST_BATCH_OFFSET_DELTA_FILED, batch.offsetDelta);
+                        generator.writeNumberField(TIMESTAMP_FILED, batch.timestamp);
+                        generator.writeEndObject();
+                    }
+                    generator.writeEndArray();
+                }
                 generator.writeEndObject();
             }
             generator.writeEndArray();
@@ -528,13 +572,40 @@ public class WriterStateManager {
                 long lastBatchBaseOffset = entryJson.get(LAST_BATCH_BASE_OFFSET_FILED).asLong();
                 int lastBatchOffsetDelta = entryJson.get(LAST_BATCH_OFFSET_DELTA_FILED).asInt();
                 long lastBatchTimestamp = entryJson.get(LAST_BATCH_TIMESTAMP_FILED).asLong();
+                short writerEpoch =
+                        entryJson.has(WRITER_EPOCH_FILED)
+                                ? (short) entryJson.get(WRITER_EPOCH_FILED).asInt()
+                                : NO_WRITER_EPOCH;
+                int lastBatchFirstSequence =
+                        entryJson.has(LAST_BATCH_FIRST_SEQUENCE_FILED)
+                                ? entryJson.get(LAST_BATCH_FIRST_SEQUENCE_FILED).asInt()
+                                : batchSequenceNumber;
+                List<WriterStateEntry.BatchMetadata> earlierBatches = new ArrayList<>();
+                if (entryJson.has(EARLIER_BATCHES_FILED)) {
+                    Iterator<JsonNode> batchesJson =
+                            entryJson.get(EARLIER_BATCHES_FILED).elements();
+                    while (batchesJson.hasNext()) {
+                        JsonNode batchJson = batchesJson.next();
+                        earlierBatches.add(
+                                new WriterStateEntry.BatchMetadata(
+                                        writerId,
+                                        batchJson.get(FIRST_SEQUENCE_FILED).asInt(),
+                                        batchJson.get(LAST_SEQUENCE_FILED).asInt(),
+                                        batchJson.get(LAST_OFFSET_FILED).asLong(),
+                                        batchJson.get(LAST_BATCH_OFFSET_DELTA_FILED).asInt(),
+                                        batchJson.get(TIMESTAMP_FILED).asLong()));
+                    }
+                }
                 snapshotEntries.add(
                         new WriterSnapshotEntry(
                                 writerId,
+                                writerEpoch,
+                                lastBatchFirstSequence,
                                 batchSequenceNumber,
                                 lastBatchBaseOffset,
                                 lastBatchOffsetDelta,
-                                lastBatchTimestamp));
+                                lastBatchTimestamp,
+                                earlierBatches));
             }
 
             return new WriterSnapshotMap(snapshotEntries);
@@ -544,10 +615,14 @@ public class WriterStateManager {
     /** Writer snapshot entry. */
     public static class WriterSnapshotEntry {
         public final long writerId;
+        public final short writerEpoch;
+        public final int lastBatchFirstSequence;
         public final int lastBatchSequence;
         public final long lastBatchBaseOffset;
         public final int lastBatchOffsetDelta;
         public final long lastBatchTimestamp;
+        // The retained batches before the last one, ordered from the oldest to the newest.
+        public final List<WriterStateEntry.BatchMetadata> earlierBatches;
 
         public WriterSnapshotEntry(
                 long writerId,
@@ -555,11 +630,52 @@ public class WriterStateManager {
                 long lastBatchBaseOffset,
                 int lastBatchOffsetDelta,
                 long lastBatchTimestamp) {
+            this(
+                    writerId,
+                    NO_WRITER_EPOCH,
+                    lastBatchSequence,
+                    lastBatchSequence,
+                    lastBatchBaseOffset,
+                    lastBatchOffsetDelta,
+                    lastBatchTimestamp);
+        }
+
+        public WriterSnapshotEntry(
+                long writerId,
+                short writerEpoch,
+                int lastBatchFirstSequence,
+                int lastBatchSequence,
+                long lastBatchBaseOffset,
+                int lastBatchOffsetDelta,
+                long lastBatchTimestamp) {
+            this(
+                    writerId,
+                    writerEpoch,
+                    lastBatchFirstSequence,
+                    lastBatchSequence,
+                    lastBatchBaseOffset,
+                    lastBatchOffsetDelta,
+                    lastBatchTimestamp,
+                    Collections.emptyList());
+        }
+
+        public WriterSnapshotEntry(
+                long writerId,
+                short writerEpoch,
+                int lastBatchFirstSequence,
+                int lastBatchSequence,
+                long lastBatchBaseOffset,
+                int lastBatchOffsetDelta,
+                long lastBatchTimestamp,
+                List<WriterStateEntry.BatchMetadata> earlierBatches) {
             this.writerId = writerId;
+            this.writerEpoch = writerEpoch;
+            this.lastBatchFirstSequence = lastBatchFirstSequence;
             this.lastBatchSequence = lastBatchSequence;
             this.lastBatchBaseOffset = lastBatchBaseOffset;
             this.lastBatchOffsetDelta = lastBatchOffsetDelta;
             this.lastBatchTimestamp = lastBatchTimestamp;
+            this.earlierBatches = earlierBatches;
         }
 
         @Override
@@ -572,20 +688,26 @@ public class WriterStateManager {
             }
             WriterSnapshotEntry that = (WriterSnapshotEntry) o;
             return writerId == that.writerId
+                    && writerEpoch == that.writerEpoch
+                    && lastBatchFirstSequence == that.lastBatchFirstSequence
                     && lastBatchSequence == that.lastBatchSequence
                     && lastBatchBaseOffset == that.lastBatchBaseOffset
                     && lastBatchOffsetDelta == that.lastBatchOffsetDelta
-                    && lastBatchTimestamp == that.lastBatchTimestamp;
+                    && lastBatchTimestamp == that.lastBatchTimestamp
+                    && earlierBatches.equals(that.earlierBatches);
         }
 
         @Override
         public int hashCode() {
             return Objects.hash(
                     writerId,
+                    writerEpoch,
+                    lastBatchFirstSequence,
                     lastBatchSequence,
                     lastBatchBaseOffset,
                     lastBatchOffsetDelta,
-                    lastBatchTimestamp);
+                    lastBatchTimestamp,
+                    earlierBatches);
         }
 
         @Override
@@ -593,6 +715,10 @@ public class WriterStateManager {
             return "WriterSnapshotEntry{"
                     + "writerId="
                     + writerId
+                    + ", writerEpoch="
+                    + writerEpoch
+                    + ", lastBatchFirstSequence="
+                    + lastBatchFirstSequence
                     + ", lastBatchSequence="
                     + lastBatchSequence
                     + ", lastBatchBaseOffset="
@@ -601,6 +727,8 @@ public class WriterStateManager {
                     + lastBatchOffsetDelta
                     + ", lastBatchTimestamp="
                     + lastBatchTimestamp
+                    + ", earlierBatches="
+                    + earlierBatches
                     + '}';
         }
     }

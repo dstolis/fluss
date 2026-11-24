@@ -32,7 +32,7 @@ import org.apache.fluss.rpc.protocol.MergeMode;
 import javax.annotation.Nullable;
 
 import static org.apache.fluss.record.DefaultKvRecordBatch.RECORD_BATCH_HEADER_SIZE;
-import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -142,7 +142,7 @@ public final class WriteRecord {
             @Nullable byte[] bucketKey) {
         checkNotNull(row);
         int estimatedSizeInBytes =
-                IndexedLogRecord.sizeOf(row) + recordBatchHeaderSize(CURRENT_LOG_MAGIC_VALUE);
+                IndexedLogRecord.sizeOf(row) + recordBatchHeaderSize(LOG_MAGIC_VALUE_V3);
         return new WriteRecord(
                 tableInfo,
                 tablePath,
@@ -185,7 +185,7 @@ public final class WriteRecord {
             @Nullable byte[] bucketKey) {
         checkNotNull(row);
         int estimatedSizeInBytes =
-                CompactedLogRecord.sizeOf(row) + recordBatchHeaderSize(CURRENT_LOG_MAGIC_VALUE);
+                CompactedLogRecord.sizeOf(row) + recordBatchHeaderSize(LOG_MAGIC_VALUE_V3);
         return new WriteRecord(
                 tableInfo,
                 tablePath,

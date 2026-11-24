@@ -41,7 +41,9 @@ import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.messages.PutKvRequest;
 import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
+import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
+import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
 import org.apache.fluss.utils.ExceptionUtils;
 
 import org.slf4j.Logger;
@@ -58,10 +60,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makeProduceLogRequest;
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makePutKvRequest;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -77,6 +82,9 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
  */
 public class Sender implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger(Sender.class);
+
+    /** The minimum time between two renegotiations of the API versions with one tablet server. */
+    private static final long RENEGOTIATION_INTERVAL_MS = 1000L;
 
     /** the record accumulator that batches records. */
     private final RecordAccumulator accumulator;
@@ -120,6 +128,9 @@ public class Sender implements Runnable {
     private final IdempotenceManager idempotenceManager;
 
     private final WriterMetricGroup writerMetricGroup;
+
+    /** When the API versions were last renegotiated with each tablet server, by server id. */
+    private final Map<Integer, Long> lastRenegotiationMs = new ConcurrentHashMap<>();
 
     public Sender(
             RecordAccumulator accumulator,
@@ -214,10 +225,13 @@ public class Sender implements Runnable {
             return;
         }
         if (idempotenceManager.idempotenceEnabled()) {
-            // may be wait for writer id.
             Set<PhysicalTablePath> targetTables = accumulator.getPhysicalTablePathsInBatches();
             // TODO: only request to init writer_id when we have valid target tables
             try {
+                // First restart the sequence of the buckets whose batches reported a gap, so the
+                // renumbered batches are drained below. This may request a new writer id.
+                idempotenceManager.maybeRestartSequences(targetTables);
+                // may be wait for writer id.
                 idempotenceManager.maybeWaitForWriterId(targetTables);
             } catch (Throwable t) {
                 if (t instanceof Error) {
@@ -470,6 +484,7 @@ public class Sender implements Runnable {
                                         batch.tableBucket().getTableId(), k -> new ArrayList<>())
                                 .add(batch));
 
+        maybeRenegotiateForV3Batches(destination, batches);
         TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(destination);
         if (gateway == null) {
             handleWriteRequestException(
@@ -481,6 +496,46 @@ public class Sender implements Runnable {
                     (tableId, writeBatches) ->
                             sendWriteRequestsForTable(gateway, tableId, acks, writeBatches));
         }
+    }
+
+    /**
+     * Log record batches of magic V3 need {@code PRODUCE_LOG} v2, which a tablet server only
+     * advertises once it has applied the level that allows V3. A connection that negotiated its
+     * versions before that still uses v1, so the server is asked for its versions again on the same
+     * connection, at most once per {@link #RENEGOTIATION_INTERVAL_MS}. Until the new versions are
+     * in use, the server rejects V3 batches sent with v1 before writing them, and they are sent
+     * again like after any retriable error.
+     */
+    private void maybeRenegotiateForV3Batches(int destination, List<ReadyWriteBatch> batches) {
+        boolean hasV3Batches = false;
+        for (ReadyWriteBatch batch : batches) {
+            if (batch.writeBatch().isLogBatch() && batch.writeBatch().hasWriterEpoch()) {
+                hasV3Batches = true;
+                break;
+            }
+        }
+        if (!hasV3Batches) {
+            return;
+        }
+        short version = metadataUpdater.negotiatedVersion(destination, ApiKeys.PRODUCE_LOG);
+        if (version < 0
+                || ApiFeatureContracts.maxLevel(
+                                ApiKeys.PRODUCE_LOG, version, LOG_RECORD_BATCH_VERSION)
+                        >= LOG_MAGIC_VALUE_V3) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long last = lastRenegotiationMs.get(destination);
+        if (last != null && now - last < RENEGOTIATION_INTERVAL_MS) {
+            return;
+        }
+        lastRenegotiationMs.put(destination, now);
+        LOG.info(
+                "Asking tablet server {} for its API versions again to write log record batches "
+                        + "of magic V3, which PRODUCE_LOG version {} cannot carry.",
+                destination,
+                version);
+        metadataUpdater.renegotiateApiVersions(destination);
     }
 
     /**
@@ -578,11 +633,15 @@ public class Sender implements Runnable {
             List<ReadyWriteBatch> writeBatches) {
         Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey = toWriteBatchesByKey(writeBatches);
         long startTime = System.currentTimeMillis();
+        writeBatches.forEach(batch -> batch.writeBatch().markAwaitingResponse());
         gateway.produceLog(request)
                 .whenComplete(
                         (produceLogResponse, e) -> {
                             writerMetricGroup.setSendLatencyInMs(
                                     System.currentTimeMillis() - startTime);
+                            // without a response, the server may or may not have written them
+                            writeBatches.forEach(
+                                    batch -> batch.writeBatch().markAnswered(e == null));
                             if (e != null) {
                                 handleWriteRequestException(e, writeBatches);
                             } else {
@@ -599,11 +658,15 @@ public class Sender implements Runnable {
             List<ReadyWriteBatch> writeBatches) {
         Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey = toWriteBatchesByKey(writeBatches);
         long startTime = System.currentTimeMillis();
+        writeBatches.forEach(batch -> batch.writeBatch().markAwaitingResponse());
         gateway.putKv(request)
                 .whenComplete(
                         (putKvResponse, e) -> {
                             writerMetricGroup.setSendLatencyInMs(
                                     System.currentTimeMillis() - startTime);
+                            // without a response, the server may or may not have written them
+                            writeBatches.forEach(
+                                    batch -> batch.writeBatch().markAnswered(e == null));
                             if (e != null) {
                                 handleWriteRequestException(e, writeBatches);
                             } else {
@@ -752,6 +815,12 @@ public class Sender implements Runnable {
         // Historical queues use the original path as their accumulator key, so capture the actual
         // RPC target before any retry handling.
         PhysicalTablePath writeTargetPath = writeBatch.writeTargetPath();
+        if (error.error() == Errors.REQUEST_TIME_OUT
+                || error.error() == Errors.NOT_ENOUGH_REPLICAS_AFTER_APPEND_EXCEPTION) {
+            // The leader appended the batch before it gave up waiting for its followers, so the
+            // batch may be stored although the write was not acknowledged.
+            writeBatch.markOutcomeUnknown();
+        }
         if (error.exception() instanceof StorageBackpressureException
                 || error.exception() instanceof HistoricalPartitionThrottledException) {
             // Hard rejection: the storage engine or historical request queue rejected the
@@ -810,9 +879,10 @@ public class Sender implements Runnable {
             if (!idempotenceManager.idempotenceEnabled()) {
                 prepareWriteRetry(readyWriteBatch, error);
                 batchesToRetry.add(readyWriteBatch);
-            } else if (idempotenceManager.hasWriterId(writeBatch.writerId())) {
-                // If idempotence is enabled only retry the request if the current writer id is
-                // the same as the writer id of the batch.
+            } else if (idempotenceManager.isOnWriterIdOfBucket(
+                    readyWriteBatch.tableBucket(), writeBatch)) {
+                // If idempotence is enabled only retry the request if the writer id of the
+                // bucket is the same as the writer id of the batch.
                 LOG.debug(
                         "Retrying batch to table-bucket {}, Batch sequence : {}",
                         readyWriteBatch.tableBucket(),

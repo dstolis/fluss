@@ -2673,6 +2673,8 @@ final class SenderTest {
         CompletableFuture<Exception> result = appendDiskTestRecord(false, tb1, 1);
         sender.runOnce();
         if (writerIdChanged) {
+            // a reset discards the sequences of all buckets, so the batch can't be retried
+            manager.resetWriterId();
             manager.setWriterId(43L);
         }
         failRequest(tb1, 0, new DiskWriteLockedException("disk full"));
