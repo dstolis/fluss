@@ -20,6 +20,7 @@ package org.apache.fluss.kafka.transcode;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.exception.FlussRuntimeException;
+import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.IdempotentBatch;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.Record;
 import org.apache.fluss.kafka.format.KafkaFieldDecoder;
 import org.apache.fluss.kafka.format.KafkaFormatFactoryRegistry;
@@ -30,8 +31,10 @@ import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.row.arrow.ArrowWriter;
 import org.apache.fluss.row.arrow.ArrowWriterPool;
 import org.apache.fluss.server.kv.wal.ArrowWalBuilder;
+import org.apache.fluss.server.kv.wal.WalBuilder;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.List;
@@ -77,6 +80,16 @@ public final class ArrowKafkaRecordTranscoder implements KafkaRecordTranscoder {
     @Override
     public EncodedRecords transcode(int partitionId, List<Record> records, TableInfo tableInfo)
             throws Exception {
+        return transcode(partitionId, records, tableInfo, null);
+    }
+
+    @Override
+    public EncodedRecords transcode(
+            int partitionId,
+            List<Record> records,
+            TableInfo tableInfo,
+            @Nullable IdempotentBatch idempotentBatch)
+            throws Exception {
         checkArgument(partitionId >= 0, "Kafka partition ID must be non-negative.");
         checkArgument(!records.isEmpty(), "Cannot transcode an empty Kafka partition.");
         checkArgument(
@@ -94,7 +107,7 @@ public final class ArrowKafkaRecordTranscoder implements KafkaRecordTranscoder {
         KafkaRowAssembler assembler = plan.rowAssembler();
         ArrowWriter writer = null;
         long epoch = 0;
-        ArrowWalBuilder builder = null;
+        WalBuilder builder = null;
         boolean ownershipTransferred = false;
         try {
             writer =
@@ -106,7 +119,15 @@ public final class ArrowKafkaRecordTranscoder implements KafkaRecordTranscoder {
                             tableInfo.getRowType(),
                             tableInfo.getTableConfig().getArrowCompressionInfo());
             epoch = writer.getEpoch();
-            builder = new ArrowWalBuilder(tableInfo.getSchemaId(), writer, memorySegmentPool, true);
+            builder =
+                    idempotentBatch == null
+                            ? new ArrowWalBuilder(
+                                    tableInfo.getSchemaId(), writer, memorySegmentPool, true)
+                            : new IdempotentArrowLogBuilder(
+                                    tableInfo.getSchemaId(),
+                                    writer,
+                                    memorySegmentPool,
+                                    idempotentBatch);
             for (Record record : records) {
                 builder.append(
                         ChangeType.APPEND_ONLY,

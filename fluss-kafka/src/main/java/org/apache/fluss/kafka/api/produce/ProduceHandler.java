@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.kafka.KafkaRequestContext;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceBackend;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand;
+import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.IdempotentBatch;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.PartitionWrite;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.RecordHeader;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.TimestampType;
@@ -71,7 +72,7 @@ import java.util.concurrent.CompletableFuture;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
- * Implements non-idempotent Kafka Produce versions 3 through 11.
+ * Implements Kafka Produce versions 3 through 11, for plain and idempotent producers.
  *
  * <p>Topic names cross the backend boundary unchanged. The backend resolves bare and qualified
  * names and returns results keyed by the original request names.
@@ -85,7 +86,7 @@ public final class ProduceHandler implements KafkaApiHandler<ProduceRequest> {
 
     private final KafkaProduceBackend backend;
 
-    /** Creates a non-idempotent Produce handler. */
+    /** Creates a Produce handler. */
     public ProduceHandler(KafkaProduceBackend backend) {
         this.backend = checkNotNull(backend);
     }
@@ -112,9 +113,8 @@ public final class ProduceHandler implements KafkaApiHandler<ProduceRequest> {
                         throw new InvalidRequestException("Negative Kafka partition ID.");
                     }
                     partitions.add(
-                            new PartitionWrite(
-                                    partition.index(),
-                                    readRecords(request.version(), partition.records())));
+                            readPartition(
+                                    partition.index(), request.version(), partition.records()));
                 } catch (RuntimeException failure) {
                     failures.put(
                             new TopicPartition(topic.name(), partition.index()),
@@ -212,8 +212,8 @@ public final class ProduceHandler implements KafkaApiHandler<ProduceRequest> {
         }
     }
 
-    private static List<KafkaProduceCommand.Record> readRecords(
-            short version, BaseRecords baseRecords) {
+    private static PartitionWrite readPartition(
+            int partitionId, short version, BaseRecords baseRecords) {
         if (!(baseRecords instanceof Records)) {
             throw new InvalidRequestException("Unsupported Kafka records representation.");
         }
@@ -223,13 +223,20 @@ public final class ProduceHandler implements KafkaApiHandler<ProduceRequest> {
             throw new InvalidRequestException("Empty or truncated Kafka record batch.");
         }
         List<KafkaProduceCommand.Record> parsedRecords = new ArrayList<>();
+        IdempotentBatch idempotentBatch = null;
         int validBytes = 0;
+        // The request validation above allows exactly one record batch per partition.
         for (RecordBatch batch : records.batches()) {
             validBytes += batch.sizeInBytes();
             batch.ensureValid();
-            if (batch.hasProducerId() || batch.isTransactional() || batch.isControlBatch()) {
+            if (batch.isTransactional() || batch.isControlBatch()) {
                 throw new InvalidRequestException(
-                        "Idempotent, transactional, and control record batches are not supported.");
+                        "Transactional and control record batches are not supported.");
+            }
+            if (batch.hasProducerId()) {
+                idempotentBatch =
+                        new IdempotentBatch(
+                                batch.producerId(), batch.producerEpoch(), batch.baseSequence());
             }
             // Validate the incoming Kafka batch before discarding its offset metadata. Fluss
             // assigns its own storage offsets later, independently of this input validation.
@@ -271,7 +278,7 @@ public final class ProduceHandler implements KafkaApiHandler<ProduceRequest> {
         if (parsedRecords.isEmpty() || validBytes != records.sizeInBytes()) {
             throw new InvalidRequestException("Empty or truncated Kafka record batch.");
         }
-        return parsedRecords;
+        return new PartitionWrite(partitionId, parsedRecords, idempotentBatch);
     }
 
     private static TimestampType timestampType(RecordBatch batch) {

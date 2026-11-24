@@ -18,7 +18,15 @@
 package org.apache.fluss.kafka.backend.produce;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.security.acl.FlussPrincipal;
+import org.apache.fluss.utils.concurrent.FutureUtils;
 
+import org.apache.kafka.common.errors.UnsupportedForMessageFormatException;
+import org.apache.kafka.common.errors.UnsupportedVersionException;
+
+import javax.annotation.Nullable;
+
+import java.net.InetAddress;
 import java.util.concurrent.CompletableFuture;
 
 /** Narrow backend used by the Kafka Produce API. */
@@ -40,6 +48,20 @@ public interface KafkaProduceBackend extends AutoCloseable {
      * represents completion of the write, not permission to continue reading the input payloads.
      */
     CompletableFuture<KafkaProduceResult> write(KafkaProduceCommand command);
+
+    /**
+     * Allocates the producer ID of a new idempotent producer. It is a Fluss writer ID, so the
+     * records of the producer are checked like those of a Fluss writer.
+     *
+     * <p>The future fails with {@link UnsupportedForMessageFormatException} while the cluster does
+     * not allow the log record batch format that stores what idempotence needs.
+     */
+    default CompletableFuture<Long> initProducerId(
+            String listenerName, @Nullable InetAddress clientAddress, FlussPrincipal principal) {
+        return FutureUtils.completedExceptionally(
+                new UnsupportedVersionException(
+                        "This backend does not support idempotent producers."));
+    }
 
     /** Releases backend resources after request processing stops. */
     @Override

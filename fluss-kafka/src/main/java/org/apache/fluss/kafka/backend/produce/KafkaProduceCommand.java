@@ -128,11 +128,22 @@ public final class KafkaProduceCommand {
     public static final class PartitionWrite {
         private final int partitionId;
         private final List<Record> records;
+        private final @Nullable IdempotentBatch idempotentBatch;
 
         /** Creates the writes for one partition. */
         public PartitionWrite(int partitionId, List<Record> records) {
+            this(partitionId, records, null);
+        }
+
+        /**
+         * Creates the writes for one partition. The records were sent by an idempotent producer if
+         * {@code idempotentBatch} is not null.
+         */
+        public PartitionWrite(
+                int partitionId, List<Record> records, @Nullable IdempotentBatch idempotentBatch) {
             this.partitionId = partitionId;
             this.records = immutableCopy(records);
+            this.idempotentBatch = idempotentBatch;
         }
 
         /** Returns the Kafka partition ID. */
@@ -145,6 +156,47 @@ public final class KafkaProduceCommand {
          */
         public List<Record> records() {
             return records;
+        }
+
+        /**
+         * Returns the producer state of the records if an idempotent producer sent them, or null.
+         */
+        public @Nullable IdempotentBatch idempotentBatch() {
+            return idempotentBatch;
+        }
+    }
+
+    /**
+     * The producer state of the single Kafka record batch an idempotent producer sends for a
+     * partition: who sent it and the sequence number of its first record. The sequence advances by
+     * one for every Kafka record, including records with a null value.
+     */
+    @Internal
+    public static final class IdempotentBatch {
+        private final long producerId;
+        private final short producerEpoch;
+        private final int baseSequence;
+
+        /** Creates the producer state of one Kafka record batch. */
+        public IdempotentBatch(long producerId, short producerEpoch, int baseSequence) {
+            this.producerId = producerId;
+            this.producerEpoch = producerEpoch;
+            this.baseSequence = baseSequence;
+        }
+
+        /** Returns the Kafka producer ID, which is the Fluss writer ID. */
+        public long producerId() {
+            return producerId;
+        }
+
+        /** Returns the Kafka producer epoch, which is the Fluss writer epoch. */
+        public short producerEpoch() {
+            return producerEpoch;
+        }
+
+        /** Returns the sequence number of the first record of the batch. */
+        public int baseSequence() {
+            return baseSequence;
         }
     }
 

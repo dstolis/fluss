@@ -22,6 +22,7 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.exception.AuthorizationException;
 import org.apache.fluss.kafka.KafkaServerTestBase;
+import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.IdempotentBatch;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.PartitionWrite;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.Record;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.TopicWrite;
@@ -33,6 +34,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.netty.server.Session;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
@@ -48,6 +50,7 @@ import org.apache.fluss.server.zk.data.LeaderAndIsr;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.utils.IOUtils;
 
+import org.apache.kafka.common.errors.UnsupportedForMessageFormatException;
 import org.apache.kafka.common.protocol.Errors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -66,6 +69,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests direct local append, per-partition failures and shared conversion memory. */
 class GatewayKafkaProduceBackendTest extends KafkaServerTestBase {
@@ -226,6 +230,79 @@ class GatewayKafkaProduceBackendTest extends KafkaServerTestBase {
         assertThat(replicaManager.getMemorySegmentPool().usedPages()).isZero();
     }
 
+    @Test
+    void testIdempotentProducerIsRejectedUntilTheClusterAllowsRecordBatchV3() throws Exception {
+        createTable("topic", 42L, Collections.singletonList(TABLET_SERVER_ID));
+        GatewayKafkaProduceBackend backend = backend();
+
+        assertThatThrownBy(() -> initProducerId(backend))
+                .hasCauseInstanceOf(UnsupportedForMessageFormatException.class)
+                .hasMessageContaining("log.record-batch.version");
+        KafkaProduceResult result =
+                backend.write(command((short) 1, topic("topic", idempotent(0, 7L, 0, 0), good(1))))
+                        .get(10, TimeUnit.SECONDS);
+        // only the partition of the idempotent producer is rejected, and nothing of it is stored
+        assertErrors(result, Errors.UNSUPPORTED_FOR_MESSAGE_FORMAT, Errors.NONE);
+        assertThat(result.topics().get(0).partitions().get(0).errorMessage())
+                .contains("log.record-batch.version")
+                .contains("enable.idempotence=false");
+        assertThat(logEndOffset(new TableBucket(42L, 0))).isZero();
+        assertThat(logEndOffset(new TableBucket(42L, 1))).isEqualTo(1L);
+    }
+
+    @Test
+    void testIdempotentProduceIsCheckedBySequenceAndEpoch() throws Exception {
+        createTable("topic", 42L, Collections.singletonList(TABLET_SERVER_ID));
+        allowRecordBatchV3();
+        GatewayKafkaProduceBackend backend = backend();
+        TableBucket bucket = new TableBucket(42L, 0);
+        long producerId = initProducerId(backend);
+        assertThat(initProducerId(backend)).isNotEqualTo(producerId);
+
+        assertThat(write(backend, idempotent(0, producerId, 0, 0, 2)).baseOffset()).isZero();
+        // a retry of the batch is answered with the offset it was stored at, and stored once
+        assertThat(write(backend, idempotent(0, producerId, 0, 0, 2)).baseOffset()).isZero();
+        assertThat(logEndOffset(bucket)).isEqualTo(2L);
+        // every record took one sequence number
+        assertThat(write(backend, idempotent(0, producerId, 0, 2, 1)).baseOffset()).isEqualTo(2L);
+        assertThat(write(backend, idempotent(0, producerId, 0, 5, 1)).error())
+                .isEqualTo(Errors.OUT_OF_ORDER_SEQUENCE_NUMBER);
+
+        // a new epoch starts its sequence again, and fences the batches of the epoch before
+        assertThat(write(backend, idempotent(0, producerId, 1, 0, 1)).baseOffset()).isEqualTo(3L);
+        assertThat(write(backend, idempotent(0, producerId, 0, 3, 1)).error())
+                .isEqualTo(Errors.INVALID_PRODUCER_EPOCH);
+        assertThat(logEndOffset(bucket)).isEqualTo(4L);
+    }
+
+    private static long initProducerId(GatewayKafkaProduceBackend backend) throws Exception {
+        return backend.initProducerId(
+                        "KAFKA", InetAddress.getLoopbackAddress(), FlussPrincipal.ANONYMOUS)
+                .get(10, TimeUnit.SECONDS);
+    }
+
+    private static PartitionResult write(
+            GatewayKafkaProduceBackend backend, PartitionWrite partition) throws Exception {
+        return backend.write(command((short) 1, topic("topic", partition)))
+                .get(10, TimeUnit.SECONDS)
+                .topics()
+                .get(0)
+                .partitions()
+                .get(0);
+    }
+
+    private long logEndOffset(TableBucket bucket) {
+        return replicaManager.getReplicaOrException(bucket).getLocalLogEndOffset();
+    }
+
+    /**
+     * Applies, on this tablet server, the cluster feature level that allows log record batches of
+     * magic V3. It is the only place of this test that knows how a level reaches a server.
+     */
+    private void allowRecordBatchV3() {
+        replicaManager.getClusterFeatures().apply(ClusterFeatureLevels.latest());
+    }
+
     private void acknowledge(TableBucket bucket) throws Exception {
         CompletableFuture<Void> fetched = new CompletableFuture<>();
         replicaManager.fetchLogRecords(
@@ -308,6 +385,26 @@ class GatewayKafkaProduceBackendTest extends KafkaServerTestBase {
                                 null,
                                 ByteBuffer.wrap(new byte[] {65}),
                                 Collections.emptyList())));
+    }
+
+    /** One batch of an idempotent producer with {@code count} records. */
+    private static PartitionWrite idempotent(
+            int id, long producerId, int epoch, int baseSequence, int count) {
+        List<Record> records = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            records.add(
+                    new Record(
+                            123L,
+                            null,
+                            ByteBuffer.wrap(new byte[] {(byte) (baseSequence + i)}),
+                            Collections.emptyList()));
+        }
+        return new PartitionWrite(
+                id, records, new IdempotentBatch(producerId, (short) epoch, baseSequence));
+    }
+
+    private static PartitionWrite idempotent(int id, long producerId, int epoch, int sequence) {
+        return idempotent(id, producerId, epoch, sequence, 1);
     }
 
     private static void assertErrors(KafkaProduceResult result, Errors... errors) {

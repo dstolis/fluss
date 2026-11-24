@@ -36,7 +36,10 @@ import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
+import org.apache.fluss.rpc.messages.InitWriterRequest;
+import org.apache.fluss.rpc.messages.InitWriterResponse;
 import org.apache.fluss.rpc.netty.server.Session;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.server.entity.UserContext;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
@@ -45,8 +48,12 @@ import org.apache.fluss.server.tablet.TabletService;
 import org.apache.fluss.utils.concurrent.FutureUtils;
 
 import org.apache.kafka.common.errors.InvalidTopicException;
+import org.apache.kafka.common.errors.UnsupportedForMessageFormatException;
 import org.apache.kafka.common.protocol.Errors;
 
+import javax.annotation.Nullable;
+
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -57,12 +64,21 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeoutException;
 
 import static org.apache.fluss.kafka.error.KafkaErrorMapper.unwrap;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.security.acl.OperationType.WRITE;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /** Adapts local replicas to the Kafka Produce backend contract. */
 @Internal
 public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
+
+    private static final String IDEMPOTENCE_NOT_ENABLED =
+            "Idempotent producers need cluster feature '"
+                    + ClusterFeature.LOG_RECORD_BATCH_VERSION.featureName()
+                    + "' at level "
+                    + LOG_MAGIC_VALUE_V3
+                    + ", which this cluster has not enabled yet. Raise the level, or set "
+                    + "enable.idempotence=false in the producer.";
 
     private final TabletService service;
     private final TabletServerMetadataCache metadataCache;
@@ -122,9 +138,21 @@ public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
                     }
                     try {
                         service.authorizeTable(WRITE, path);
+                        if (partition.idempotentBatch() != null && !idempotentProduceEnabled()) {
+                            result.complete(
+                                    new PartitionResult(
+                                            partition.partitionId(),
+                                            Errors.UNSUPPORTED_FOR_MESSAGE_FORMAT,
+                                            -1L,
+                                            IDEMPOTENCE_NOT_ENABLED));
+                            continue;
+                        }
                         EncodedRecords converted =
                                 transcoder.transcode(
-                                        partition.partitionId(), partition.records(), tableInfo);
+                                        partition.partitionId(),
+                                        partition.records(),
+                                        tableInfo,
+                                        partition.idempotentBatch());
                         batch.convertedRecords.add(converted);
                         batch.entriesPerBucket.put(bucket, converted.records());
                         batch.results.put(bucket, result);
@@ -144,6 +172,37 @@ public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
         }
         return FutureUtils.combineAll(topics)
                 .thenApply(results -> new KafkaProduceResult(new ArrayList<>(results)));
+    }
+
+    @Override
+    public CompletableFuture<Long> initProducerId(
+            String listenerName, @Nullable InetAddress clientAddress, FlussPrincipal principal) {
+        if (!idempotentProduceEnabled()) {
+            return FutureUtils.completedExceptionally(
+                    new UnsupportedForMessageFormatException(IDEMPOTENCE_NOT_ENABLED));
+        }
+        try {
+            service.setCurrentSession(
+                    new Session((short) 0, listenerName, false, clientAddress, principal));
+            return service.initWriter(new InitWriterRequest())
+                    .thenApply(InitWriterResponse::getWriterId);
+        } catch (Exception failure) {
+            return FutureUtils.completedExceptionally(failure);
+        }
+    }
+
+    /**
+     * Whether this tablet server has applied the cluster feature level that allows log record
+     * batches of magic V3. Only they store the producer epoch and the sequence of every record,
+     * which the duplicate and ordering checks of idempotent producers need.
+     *
+     * <p>The check is made here because the records are appended to the local replicas directly,
+     * without the check the tablet server makes on the batches of a produce request.
+     */
+    private boolean idempotentProduceEnabled() {
+        return replicaManager
+                .getClusterFeatures()
+                .isFinalizedAtLeast(ClusterFeature.LOG_RECORD_BATCH_VERSION, LOG_MAGIC_VALUE_V3);
     }
 
     private void setCurrentSession(KafkaProduceCommand command) {

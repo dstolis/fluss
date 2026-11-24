@@ -24,6 +24,7 @@ import org.apache.fluss.config.KafkaValueConversionType;
 import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.InvalidTableException;
+import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.IdempotentBatch;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.Record;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.RecordHeader;
 import org.apache.fluss.kafka.backend.produce.KafkaProduceCommand.TimestampType;
@@ -83,6 +84,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.apache.fluss.record.DefaultLogRecordBatch.APPEND_ONLY_FLAG_MASK;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
+import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.record.LogRecordBatchFormat.attributeOffset;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -248,6 +251,32 @@ class ArrowKafkaRecordTranscoderTest {
                     assertThat(row.getBytes(3)).isEqualTo(bytes("key"));
                     assertMetadata(row, 4, 123L, 0, 7);
                 });
+    }
+
+    @Test
+    void testIdempotentBatchCarriesProducerStateAndNumbersEveryRecord() throws Exception {
+        TableInfo table = envelope(false, false);
+        // the null value is a row of its own, so it takes a sequence number like Kafka counts it
+        List<Record> records = records(bytes("a"), null, bytes("c"));
+
+        try (EncodedRecords output =
+                transcoder.transcode(0, records, table, new IdempotentBatch(77L, (short) 3, 10))) {
+            LogRecordBatch batch = output.records().batches().iterator().next();
+            batch.ensureValid();
+            assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V3);
+            assertThat(batch.writerId()).isEqualTo(77L);
+            assertThat(batch.writerEpoch()).isEqualTo((short) 3);
+            assertThat(batch.batchSequence()).isEqualTo(10);
+            assertThat(batch.lastSequence()).isEqualTo(12);
+            assertThat(batch.getRecordCount()).isEqualTo(3);
+        }
+
+        // the records of a producer without idempotence keep the format they have today
+        try (EncodedRecords output = transcoder.transcode(0, records, table, null)) {
+            LogRecordBatch batch = output.records().batches().iterator().next();
+            assertThat(batch.magic()).isLessThan(LOG_MAGIC_VALUE_V3);
+            assertThat(batch.writerId()).isEqualTo(NO_WRITER_ID);
+        }
     }
 
     @ParameterizedTest

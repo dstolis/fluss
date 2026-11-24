@@ -61,6 +61,10 @@ public final class KafkaErrorMapper {
                 return Errors.NOT_ENOUGH_REPLICAS;
             case NOT_ENOUGH_REPLICAS_AFTER_APPEND_EXCEPTION:
                 return Errors.NOT_ENOUGH_REPLICAS_AFTER_APPEND;
+            case OUT_OF_ORDER_SEQUENCE_EXCEPTION:
+                return Errors.OUT_OF_ORDER_SEQUENCE_NUMBER;
+            case INVALID_WRITER_EPOCH_EXCEPTION:
+                return Errors.INVALID_PRODUCER_EPOCH;
             case AUTHORIZATION_EXCEPTION:
                 return Errors.TOPIC_AUTHORIZATION_FAILED;
             case LOG_STORAGE_EXCEPTION:
