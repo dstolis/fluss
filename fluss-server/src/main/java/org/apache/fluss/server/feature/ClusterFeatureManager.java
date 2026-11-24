@@ -158,7 +158,7 @@ public class ClusterFeatureManager {
                                     + "root, but tablet servers %s applied higher levels than "
                                     + "%s. The node was lost, for example by a ZooKeeper restore, "
                                     + "and starting again would lower a level. Restore the node, "
-                                    + "for example to %s.",
+                                    + "for example to %s, then restart the coordinators.",
                             ZkData.ClusterFeaturesZNode.path(),
                             higher,
                             initial,

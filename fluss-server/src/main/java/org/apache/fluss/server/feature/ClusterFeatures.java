@@ -18,8 +18,10 @@
 package org.apache.fluss.server.feature;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.exception.UnreadableClusterFeatureLevelsException;
+import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
@@ -120,9 +122,10 @@ public final class ClusterFeatures {
      * Fails if the cluster has finalized a feature level this server does not support, for example
      * when a server of an older version starts after the cluster enabled a newer log record batch
      * format. The server could not read the data written at that level, so it must not start and
-     * join the cluster.
+     * join the cluster. Also fails if the feature contracts of this build are inconsistent.
      */
     public static void checkSupportsFinalizedFeatures(ZooKeeperClient zkClient) throws Exception {
+        checkContracts();
         Optional<VersionedData<Map<String, Integer>>> stored;
         try {
             stored = zkClient.getClusterFeatureLevels();
@@ -140,6 +143,24 @@ public final class ClusterFeatures {
                             "This server does not support the finalized cluster features %s. "
                                     + "Upgrade it to a version that supports them.",
                             unsupported));
+        }
+    }
+
+    /**
+     * Fails if the feature contracts of this build are inconsistent, so that such a build does not
+     * start. Otherwise it would fail every request that uses the contracts, see {@link
+     * ApiFeatureContracts#validate}.
+     */
+    @VisibleForTesting
+    static void checkContracts() {
+        try {
+            ApiFeatureContracts.validate();
+        } catch (ExceptionInInitializerError | NoClassDefFoundError | IllegalStateException e) {
+            Throwable cause = e instanceof ExceptionInInitializerError ? e.getCause() : e;
+            throw new IllegalStateException(
+                    "The cluster feature contracts of this build are invalid: "
+                            + (cause == null ? e : cause.getMessage()),
+                    cause == null ? e : cause);
         }
     }
 

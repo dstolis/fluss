@@ -940,7 +940,8 @@ public final class ZkData {
                                         + "can't be read (%s). Set the node to the levels the "
                                         + "cluster had, for example %s. A tablet server logs the "
                                         + "levels it applied, and keeps them in %s in its data "
-                                        + "directories.",
+                                        + "directories. Restart the coordinators after the "
+                                        + "repair.",
                                 path(),
                                 e.getMessage(),
                                 new String(

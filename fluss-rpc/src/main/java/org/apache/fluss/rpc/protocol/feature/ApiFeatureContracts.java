@@ -77,6 +77,18 @@ public final class ApiFeatureContracts {
 
     private ApiFeatureContracts() {}
 
+    /**
+     * Checks that the contracts of this build are consistent, for example that every read API has a
+     * version for the latest level of its feature. The contracts are checked when this class is
+     * loaded; servers call this at startup so that an inconsistent build fails to start instead of
+     * failing the first request that uses the contracts.
+     *
+     * @throws IllegalStateException if a contract is inconsistent
+     */
+    public static void validate() {
+        CONTRACTS.values().forEach(Contract::validate);
+    }
+
     /** Whether the API returns data to the reader or sends data to the server. */
     public enum Access {
         READ,
