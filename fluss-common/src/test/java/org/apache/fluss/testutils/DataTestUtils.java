@@ -37,6 +37,7 @@ import org.apache.fluss.record.KvRecordBatch;
 import org.apache.fluss.record.KvRecordTestUtils;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.record.LogRecordBatchFormat;
 import org.apache.fluss.record.LogRecordReadContext;
 import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
@@ -282,6 +283,35 @@ public class DataTestUtils {
                 objects,
                 LogFormat.ARROW,
                 DEFAULT_COMPRESSION);
+    }
+
+    /**
+     * Generates one indexed log record batch of magic V3 with the given writer state, one row per
+     * object.
+     */
+    public static MemoryLogRecords genMemoryLogRecordsV3(
+            List<Object[]> objects,
+            long writerId,
+            short writerEpoch,
+            int baseSequence,
+            boolean perRecordSequence,
+            long baseOffset)
+            throws Exception {
+        MemoryLogRecordsIndexedBuilder builder =
+                MemoryLogRecordsIndexedBuilder.builder(
+                        baseOffset,
+                        DEFAULT_SCHEMA_ID,
+                        Integer.MAX_VALUE,
+                        LogRecordBatchFormat.LOG_MAGIC_VALUE_V3,
+                        new UnmanagedPagedOutputView(100));
+        for (Object[] object : objects) {
+            builder.append(ChangeType.APPEND_ONLY, indexedRow(DATA1_ROW_TYPE, object));
+        }
+        builder.setWriterState(writerId, baseSequence);
+        builder.setWriterEpochAndSequenceMode(writerEpoch, perRecordSequence);
+        MemoryLogRecords records = MemoryLogRecords.pointToBytesView(builder.build());
+        builder.close();
+        return records;
     }
 
     public static MemoryLogRecords genIndexedMemoryLogRecords(List<IndexedRow> rows)

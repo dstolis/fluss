@@ -101,6 +101,8 @@ import org.apache.fluss.rpc.messages.CreateTableRequest;
 import org.apache.fluss.rpc.messages.CreateTableResponse;
 import org.apache.fluss.rpc.messages.DeleteProducerOffsetsRequest;
 import org.apache.fluss.rpc.messages.DeleteProducerOffsetsResponse;
+import org.apache.fluss.rpc.messages.DescribeClusterFeaturesRequest;
+import org.apache.fluss.rpc.messages.DescribeClusterFeaturesResponse;
 import org.apache.fluss.rpc.messages.DescribeClusterRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterResponse;
 import org.apache.fluss.rpc.messages.DropAclsRequest;
@@ -128,6 +130,7 @@ import org.apache.fluss.rpc.messages.ListRemoteLogManifestsResponse;
 import org.apache.fluss.rpc.messages.MetadataRequest;
 import org.apache.fluss.rpc.messages.MetadataResponse;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
+import org.apache.fluss.rpc.messages.PbClusterFeatureLevel;
 import org.apache.fluss.rpc.messages.PbHeartbeatReqForTable;
 import org.apache.fluss.rpc.messages.PbHeartbeatRespForTable;
 import org.apache.fluss.rpc.messages.PbKeyValue;
@@ -138,6 +141,7 @@ import org.apache.fluss.rpc.messages.PbProducerTableOffsets;
 import org.apache.fluss.rpc.messages.PbTableBucket;
 import org.apache.fluss.rpc.messages.PbTableInfo;
 import org.apache.fluss.rpc.messages.PbTableOffsets;
+import org.apache.fluss.rpc.messages.PbTabletServerFeatureProgress;
 import org.apache.fluss.rpc.messages.PbTabletServerLoad;
 import org.apache.fluss.rpc.messages.PrepareLakeTableSnapshotRequest;
 import org.apache.fluss.rpc.messages.PrepareLakeTableSnapshotResponse;
@@ -151,9 +155,13 @@ import org.apache.fluss.rpc.messages.RemoveServerTagByRackRequest;
 import org.apache.fluss.rpc.messages.RemoveServerTagByRackResponse;
 import org.apache.fluss.rpc.messages.RemoveServerTagRequest;
 import org.apache.fluss.rpc.messages.RemoveServerTagResponse;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesRequest;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesResponse;
 import org.apache.fluss.rpc.netty.server.Session;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.rpc.protocol.Errors;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.AclBinding;
 import org.apache.fluss.security.acl.AclBindingFilter;
 import org.apache.fluss.security.acl.FlussPrincipal;
@@ -169,6 +177,7 @@ import org.apache.fluss.server.coordinator.event.AddServerTagByRackEvent;
 import org.apache.fluss.server.coordinator.event.AddServerTagEvent;
 import org.apache.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
 import org.apache.fluss.server.coordinator.event.CancelRebalanceEvent;
+import org.apache.fluss.server.coordinator.event.ClusterFeaturesChangedEvent;
 import org.apache.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
@@ -187,6 +196,7 @@ import org.apache.fluss.server.entity.CommitKvSnapshotData;
 import org.apache.fluss.server.entity.DatabasePropertyChanges;
 import org.apache.fluss.server.entity.LakeTieringTableInfo;
 import org.apache.fluss.server.entity.TablePropertyChanges;
+import org.apache.fluss.server.feature.ClusterFeatureManager;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshotJsonSerde;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
@@ -196,6 +206,7 @@ import org.apache.fluss.server.metadata.SystemTables;
 import org.apache.fluss.server.utils.ServerRpcMessageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperClient.TableBucketAndManifest;
+import org.apache.fluss.server.zk.data.AppliedClusterFeatures;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
@@ -1872,6 +1883,115 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                             return response;
                         });
         eventManagerSupplier.get().put(event);
+        return event.getResultFuture();
+    }
+
+    @Override
+    public CompletableFuture<DescribeClusterFeaturesResponse> describeClusterFeatures(
+            DescribeClusterFeaturesRequest request) {
+        if (authorizer != null) {
+            authorizer.authorize(currentSession(), OperationType.DESCRIBE, Resource.cluster());
+        }
+        AccessContextEvent<DescribeClusterFeaturesResponse> event =
+                new AccessContextEvent<>(
+                        ctx -> {
+                            try {
+                                ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
+                                ClusterFeatureManager.FinalizedState state =
+                                        manager.finalizedState();
+                                ClusterFeatureLevels finalized = state.levels();
+                                ClusterFeatureLevels supported =
+                                        manager.supportedLevels(
+                                                ctx.liveOrShuttingDownTabletServers());
+                                DescribeClusterFeaturesResponse response =
+                                        new DescribeClusterFeaturesResponse()
+                                                .setFeatureEpoch(state.epoch());
+                                for (ClusterFeature feature : ClusterFeature.values()) {
+                                    response.addFeature()
+                                            .setName(feature.featureName())
+                                            .setFinalizedLevel(finalized.level(feature))
+                                            .setSupportedLevel(supported.level(feature));
+                                }
+                                addAppliedClusterFeatures(response);
+                                return response;
+                            } catch (ApiException e) {
+                                throw e;
+                            } catch (Exception e) {
+                                throw new FlussRuntimeException(
+                                        "Failed to describe the cluster features.", e);
+                            }
+                        });
+        eventManagerSupplier.get().put(event);
+        return event.getResultFuture();
+    }
+
+    /**
+     * Adds the levels every registered tablet server has applied. A server that has not reported
+     * any, such as one of a version without cluster features, is listed without them.
+     */
+    private void addAppliedClusterFeatures(DescribeClusterFeaturesResponse response)
+            throws Exception {
+        int[] tabletServerIds = zkClient.getSortedTabletServerList();
+        Map<Integer, AppliedClusterFeatures> applied =
+                zkClient.getAppliedClusterFeatures(tabletServerIds);
+        for (int tabletServerId : tabletServerIds) {
+            PbTabletServerFeatureProgress progress =
+                    response.addTabletServer().setTabletServerId(tabletServerId);
+            AppliedClusterFeatures serverApplied = applied.get(tabletServerId);
+            if (serverApplied != null) {
+                progress.setAppliedEpoch(serverApplied.epoch());
+                serverApplied
+                        .levels()
+                        .forEach(
+                                (name, level) ->
+                                        progress.addAppliedLevel().setName(name).setLevel(level));
+            }
+        }
+    }
+
+    @Override
+    public CompletableFuture<UpdateClusterFeaturesResponse> updateClusterFeatures(
+            UpdateClusterFeaturesRequest request) {
+        if (authorizer != null) {
+            authorizer.authorize(currentSession(), OperationType.ALTER, Resource.cluster());
+        }
+        Map<String, Integer> requestedLevels = new HashMap<>();
+        for (PbClusterFeatureLevel feature : request.getFeaturesList()) {
+            requestedLevels.put(feature.getName(), feature.getLevel());
+        }
+        boolean validateOnly = request.hasValidateOnly() && request.isValidateOnly();
+        Integer expectedEpoch =
+                request.hasExpectedFeatureEpoch() ? request.getExpectedFeatureEpoch() : null;
+        EventManager eventManager = eventManagerSupplier.get();
+        // The raise runs on the coordinator event thread, like the registration of tablet servers,
+        // so a server that registers meanwhile is either seen by the validation or checked by the
+        // ClusterFeaturesChangedEvent that follows the raise.
+        AccessContextEvent<UpdateClusterFeaturesResponse> event =
+                new AccessContextEvent<>(
+                        ctx -> {
+                            try {
+                                ClusterFeatureManager.FinalizedState state =
+                                        new ClusterFeatureManager(zkClient)
+                                                .update(
+                                                        requestedLevels,
+                                                        validateOnly,
+                                                        expectedEpoch,
+                                                        ctx.getCoordinatorZkVersion(),
+                                                        ctx.liveOrShuttingDownTabletServers());
+                                if (!validateOnly) {
+                                    eventManager.put(
+                                            new ClusterFeaturesChangedEvent(state.levels()));
+                                }
+                                return new UpdateClusterFeaturesResponse()
+                                        .setFeatureEpoch(state.epoch());
+                            } catch (ApiException e) {
+                                throw e;
+                            } catch (Exception e) {
+                                throw new FlussRuntimeException(
+                                        "Failed to update the cluster features.", e);
+                            }
+                        });
+        eventManager.put(event);
         return event.getResultFuture();
     }
 

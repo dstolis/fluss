@@ -19,18 +19,24 @@ package org.apache.fluss.server.tablet;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.server.ServerBase;
 import org.apache.fluss.server.ServerTestBase;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
+import org.apache.fluss.server.zk.data.ZkData;
+import org.apache.fluss.server.zk.data.ZkVersion;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.util.Collections;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link TabletServer}. */
 class TabletServerTest extends ServerTestBase {
@@ -67,6 +73,28 @@ class TabletServerTest extends ServerTestBase {
         // configure with a invalid port, the server should fail to start
         configuration.set(ConfigOptions.BIND_LISTENERS, "FLUSS://localhost:-12");
         return new TabletServer(configuration);
+    }
+
+    @Test
+    void testRefusesToStartBelowAFinalizedClusterFeatureLevel() throws Exception {
+        // the running server would treat the unsupported level as a fatal error
+        server.close();
+        server = null;
+        // a later version finalized a cluster feature that this version does not know
+        zookeeperClient.createClusterFeatureLevels(
+                Collections.singletonMap("added-by-a-later-version", 1),
+                ZkVersion.MATCH_ANY_VERSION.getVersion());
+        TabletServer tabletServer = new TabletServer(createTabletServerConfiguration());
+        try {
+            assertThatThrownBy(tabletServer::start)
+                    .rootCause()
+                    .isInstanceOf(IllegalConfigurationException.class)
+                    .hasMessageContaining("does not support the finalized cluster features")
+                    .hasMessageContaining("added-by-a-later-version");
+        } finally {
+            tabletServer.close();
+            zookeeperClient.getCuratorClient().delete().forPath(ZkData.ClusterFeaturesZNode.path());
+        }
     }
 
     private static Configuration createTabletServerConfiguration() {

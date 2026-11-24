@@ -42,6 +42,8 @@ import org.apache.fluss.row.encode.KvValueLayout;
 import org.apache.fluss.row.encode.ValueDecoder;
 import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.ApiVersionsRequest;
+import org.apache.fluss.rpc.messages.ApiVersionsResponse;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.FindConsumerGroupOwnerRequest;
 import org.apache.fluss.rpc.messages.FindConsumerGroupOwnerResponse;
@@ -53,12 +55,14 @@ import org.apache.fluss.rpc.messages.ListOffsetsRequest;
 import org.apache.fluss.rpc.messages.ListOffsetsResponse;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrResponse;
+import org.apache.fluss.rpc.messages.PbApiVersion;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForBucket;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForTable;
 import org.apache.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import org.apache.fluss.rpc.messages.PbLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbNotifyLeaderAndIsrReqForBucket;
 import org.apache.fluss.rpc.messages.PbPrefixLookupRespForBucket;
+import org.apache.fluss.rpc.messages.PbProduceLogRespForBucket;
 import org.apache.fluss.rpc.messages.PbPutKvRespForBucket;
 import org.apache.fluss.rpc.messages.PbTableStatsRespForBucket;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
@@ -66,6 +70,7 @@ import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.rpc.messages.ScanKvRequest;
 import org.apache.fluss.rpc.messages.ScanKvResponse;
 import org.apache.fluss.rpc.messages.StopReplicaRequest;
+import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
@@ -140,6 +145,7 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeUpdateMeta
 import static org.apache.fluss.testutils.DataTestUtils.compactedRow;
 import static org.apache.fluss.testutils.DataTestUtils.genKvRecordBatch;
 import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
+import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsV3;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -149,7 +155,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class TabletServiceITCase {
     @RegisterExtension
     public static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
-            FlussClusterExtension.builder().setNumOfTabletServers(3).build();
+            FlussClusterExtension.builder()
+                    .setNumOfTabletServers(3)
+                    // like an upgraded cluster, which has not enabled V3 log record batches
+                    .setBaselineClusterFeatureLevels(true)
+                    .build();
 
     @Test
     void testFindConsumerGroupOwner() throws Exception {
@@ -1050,6 +1060,65 @@ public class TabletServiceITCase {
                     tabletServerGateway.initWriter(new InitWriterRequest()).get();
             assertThat(response.getWriterId()).isEqualTo(i);
         }
+    }
+
+    @Test
+    void testApiVersionsReportsFinalizedFeatureLevel() throws Exception {
+        ApiVersionsResponse response =
+                FLUSS_CLUSTER_EXTENSION
+                        .newTabletServerClientForNode(0)
+                        .apiVersions(
+                                new ApiVersionsRequest()
+                                        .setClientSoftwareName("test")
+                                        .setClientSoftwareVersion("test"))
+                        .get();
+        PbApiVersion produceLog =
+                response.getApiVersionsList().stream()
+                        .filter(version -> version.getApiKey() == ApiKeys.PRODUCE_LOG.id)
+                        .findFirst()
+                        .get();
+        // writers learn from the reported level that they keep writing the existing formats
+        assertThat(response.getFinalizedFeaturesList())
+                .singleElement()
+                .satisfies(
+                        feature -> {
+                            assertThat(feature.getName()).isEqualTo("log.record-batch.version");
+                            assertThat(feature.getLevel()).isEqualTo(2);
+                        });
+        // and from the advertised PRODUCE_LOG version: v2, which carries V3, is left out until
+        // the level that allows V3 is applied
+        assertThat(produceLog.getMaxVersion()).isEqualTo((short) 1);
+    }
+
+    @Test
+    void testProduceLogV3RejectedWhenDisabled() throws Exception {
+        long tableId =
+                createTable(FLUSS_CLUSTER_EXTENSION, DATA1_TABLE_PATH, DATA1_TABLE_DESCRIPTOR);
+        TableBucket tb = new TableBucket(tableId, 0);
+        FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(tb);
+        TabletServerGateway leaderGateWay =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(
+                        FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(tb));
+
+        ProduceLogResponse response =
+                leaderGateWay
+                        .produceLog(
+                                newProduceLogRequest(
+                                        tableId,
+                                        0,
+                                        1,
+                                        genMemoryLogRecordsV3(DATA1, 1L, (short) 0, 0, true, 0L)))
+                        .get();
+
+        // the connection negotiated PRODUCE_LOG v1, which cannot carry V3, so the bucket is
+        // rejected with an error the writer can retry, and nothing is written
+        assertThat(response.getBucketsRespsCount()).isEqualTo(1);
+        PbProduceLogRespForBucket bucketResp = response.getBucketsRespsList().get(0);
+        assertThat(bucketResp.getErrorCode()).isEqualTo(Errors.UNSUPPORTED_VERSION.code());
+        assertThat(bucketResp.getErrorMessage())
+                .contains("PRODUCE_LOG version 1 carries log record batches up to magic 2");
+        assertThat(FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(tb).getLocalLogEndOffset())
+                .isZero();
     }
 
     @Test

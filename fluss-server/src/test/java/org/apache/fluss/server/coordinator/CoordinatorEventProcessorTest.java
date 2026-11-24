@@ -54,8 +54,12 @@ import org.apache.fluss.rpc.messages.UpdateMetadataResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.coordinator.TestingControlledNotifyGateway.PendingNotify;
 import org.apache.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
+import org.apache.fluss.server.coordinator.event.ClusterFeaturesChangedEvent;
 import org.apache.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
 import org.apache.fluss.server.coordinator.event.CoordinatorEventManager;
@@ -70,6 +74,7 @@ import org.apache.fluss.server.entity.CommitKvSnapshotData;
 import org.apache.fluss.server.entity.CommitRemoteLogManifestData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import org.apache.fluss.server.entity.TablePropertyChanges;
+import org.apache.fluss.server.feature.ClusterFeatures;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
 import org.apache.fluss.server.kv.snapshot.ZooKeeperCompletedSnapshotHandleStore;
 import org.apache.fluss.server.metadata.BucketMetadata;
@@ -77,6 +82,7 @@ import org.apache.fluss.server.metadata.ClusterMetadata;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.metadata.TableMetadata;
+import org.apache.fluss.server.metadata.TabletServerResource;
 import org.apache.fluss.server.metrics.group.TestingMetricGroups;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
 import org.apache.fluss.server.zk.NOPErrorHandler;
@@ -403,6 +409,97 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
         retry(
                 Duration.ofMinutes(1),
                 () -> assertThat(zookeeperClient.getTableAssignment(t1Id)).isEmpty());
+    }
+
+    @Test
+    void testTabletServerWithoutFinalizedFeaturesIsKeptOut() throws Exception {
+        initCoordinatorChannel();
+        zookeeperClient.createClusterFeatureLevels(
+                ClusterFeatureLevels.latest().toMap(), ZkVersion.MATCH_ANY_VERSION.getVersion());
+        // registrations are ephemeral, closing the client removes them again
+        try (ZooKeeperClient client =
+                ZOO_KEEPER_EXTENSION_WRAPPER
+                        .getCustomExtension()
+                        .createZooKeeperClient(NOPErrorHandler.INSTANCE)) {
+            int oldServerId = 7;
+            int newServerId = 8;
+            // an old version, which registers no cluster features
+            client.registerTabletServer(
+                    oldServerId, tabletServerRegistration(oldServerId, Collections.emptyMap()));
+            client.registerTabletServer(
+                    newServerId,
+                    tabletServerRegistration(newServerId, ClusterFeatures.supportedFeatures()));
+
+            // events are handled in order, so once the new server is live, the old one is handled
+            retryVerifyContext(ctx -> assertThat(ctx.liveTabletServerSet()).contains(newServerId));
+            retryVerifyContext(
+                    ctx -> assertThat(ctx.liveTabletServerSet()).doesNotContain(oldServerId));
+        } finally {
+            zookeeperClient.getCuratorClient().delete().forPath(ZkData.ClusterFeaturesZNode.path());
+        }
+        retryVerifyContext(ctx -> assertThat(ctx.liveTabletServerSet()).doesNotContain(8));
+    }
+
+    @Test
+    void testTabletServerLiveDuringALevelRaiseIsRemoved() throws Exception {
+        initCoordinatorChannel();
+        try (ZooKeeperClient client =
+                ZOO_KEEPER_EXTENSION_WRAPPER
+                        .getCustomExtension()
+                        .createZooKeeperClient(NOPErrorHandler.INSTANCE)) {
+            int oldServerId = 7;
+            int newServerId = 8;
+            // at level 2 an old version joins as usual
+            client.registerTabletServer(
+                    oldServerId, tabletServerRegistration(oldServerId, Collections.emptyMap()));
+            client.registerTabletServer(
+                    newServerId,
+                    tabletServerRegistration(newServerId, ClusterFeatures.supportedFeatures()));
+            retryVerifyContext(
+                    ctx ->
+                            assertThat(ctx.liveTabletServerSet())
+                                    .contains(oldServerId, newServerId));
+
+            // the coordinator tells its event thread about every raise
+            eventProcessor
+                    .getCoordinatorEventManager()
+                    .put(
+                            new ClusterFeaturesChangedEvent(
+                                    ClusterFeatureLevels.baseline()
+                                            .with(ClusterFeature.LOG_RECORD_BATCH_VERSION, 3)));
+
+            // the old server is removed, the new one stays
+            retryVerifyContext(
+                    ctx -> {
+                        assertThat(ctx.liveTabletServerSet()).doesNotContain(oldServerId);
+                        assertThat(ctx.liveTabletServerSet()).contains(newServerId);
+                    });
+
+            // and an old server registering now is kept out, also when the raised level is not
+            // read back from ZooKeeper
+            int laterServerId = 9;
+            client.registerTabletServer(
+                    laterServerId, tabletServerRegistration(laterServerId, Collections.emptyMap()));
+            int checkServerId = 10;
+            client.registerTabletServer(
+                    checkServerId,
+                    tabletServerRegistration(checkServerId, ClusterFeatures.supportedFeatures()));
+            retryVerifyContext(
+                    ctx -> assertThat(ctx.liveTabletServerSet()).contains(checkServerId));
+            retryVerifyContext(
+                    ctx -> assertThat(ctx.liveTabletServerSet()).doesNotContain(laterServerId));
+        }
+    }
+
+    private static TabletServerRegistration tabletServerRegistration(
+            int serverId, Map<String, SupportedLevelRange> supportedFeatures) {
+        return new TabletServerRegistration(
+                "rack" + serverId,
+                Endpoint.fromListenersString(
+                        DEFAULT_LISTENER_NAME + "://host" + serverId + ":1234"),
+                System.currentTimeMillis(),
+                TabletServerResource.unknown(),
+                supportedFeatures);
     }
 
     @Test

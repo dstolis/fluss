@@ -1048,6 +1048,7 @@ mod tests {
                         })
                         .collect(),
                     server_type: Some(ServerType::TabletServer.to_type_id()),
+                    ..Default::default()
                 }
                 .encode_to_vec(),
                 ApiKey::Lookup => LookupResponse {

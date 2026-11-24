@@ -66,6 +66,8 @@ import org.apache.fluss.rpc.messages.DescribeBucketsRequest;
 import org.apache.fluss.rpc.messages.DescribeBucketsResponse;
 import org.apache.fluss.rpc.messages.DescribeClusterConfigsRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterConfigsResponse;
+import org.apache.fluss.rpc.messages.DescribeClusterFeaturesRequest;
+import org.apache.fluss.rpc.messages.DescribeClusterFeaturesResponse;
 import org.apache.fluss.rpc.messages.DescribeClusterRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterResponse;
 import org.apache.fluss.rpc.messages.DropAclsRequest;
@@ -128,6 +130,8 @@ import org.apache.fluss.rpc.messages.RemoveServerTagRequest;
 import org.apache.fluss.rpc.messages.RemoveServerTagResponse;
 import org.apache.fluss.rpc.messages.TableExistsRequest;
 import org.apache.fluss.rpc.messages.TableExistsResponse;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesRequest;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.server.entity.AdjustIsrResultForBucket;
 import org.apache.fluss.server.entity.CommitRemoteLogManifestData;
@@ -522,6 +526,18 @@ public class TestCoordinatorGateway implements CoordinatorGateway {
     @Override
     public CompletableFuture<DescribeClusterResponse> describeCluster(
             DescribeClusterRequest request) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public CompletableFuture<DescribeClusterFeaturesResponse> describeClusterFeatures(
+            DescribeClusterFeaturesRequest request) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public CompletableFuture<UpdateClusterFeaturesResponse> updateClusterFeatures(
+            UpdateClusterFeaturesRequest request) {
         throw new UnsupportedOperationException();
     }
 

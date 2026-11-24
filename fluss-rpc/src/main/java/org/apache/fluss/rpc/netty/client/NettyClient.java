@@ -27,6 +27,7 @@ import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.netty.NettyMetrics;
 import org.apache.fluss.rpc.netty.NettyUtils;
 import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.security.auth.AuthenticationFactory;
 import org.apache.fluss.security.auth.ClientAuthenticator;
 import org.apache.fluss.shaded.netty4.io.netty.bootstrap.Bootstrap;
@@ -187,7 +188,31 @@ public final class NettyClient implements RpcClient {
         return connection != null && connection.isReady();
     }
 
+    @Override
+    public int finalizedFeatureLevel(ClusterFeature feature) {
+        int level = feature.baselineLevel();
+        for (ServerConnection connection : connections.values()) {
+            level = Math.max(level, connection.finalizedFeatureLevel(feature));
+        }
+        return level;
+    }
+
     /** Send an RPC request to the given server and return a future for the response. */
+    @Override
+    public short negotiatedVersion(ServerNode node, ApiKeys apiKey) {
+        ServerConnection connection = connections.get(ConnectionKey.from(node));
+        return connection == null ? -1 : connection.negotiatedVersion(apiKey);
+    }
+
+    @Override
+    public CompletableFuture<Void> renegotiateApiVersions(ServerNode node) {
+        checkArgument(!isClosed, "Netty client is closed.");
+        ServerConnection connection = connections.get(ConnectionKey.from(node));
+        return connection == null
+                ? CompletableFuture.completedFuture(null)
+                : connection.renegotiateApiVersions();
+    }
+
     @Override
     public CompletableFuture<ApiMessage> sendRequest(
             ServerNode node, ApiKeys apiKey, ApiMessage request) {

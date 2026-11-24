@@ -19,6 +19,7 @@ package org.apache.fluss.server.zk.data;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.cluster.Endpoint;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.fluss.utils.json.JsonDeserializer;
@@ -27,6 +28,7 @@ import org.apache.fluss.utils.json.JsonSerializer;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /** Json serializer and deserializer for {@link CoordinatorAddress}. */
 @Internal
@@ -35,12 +37,13 @@ public class CoordinatorAddressJsonSerde
 
     public static final CoordinatorAddressJsonSerde INSTANCE = new CoordinatorAddressJsonSerde();
     private static final String VERSION_KEY = "version";
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
 
     private static final String ID = "id";
     private static final String HOST = "host";
     private static final String PORT = "port";
     private static final String LISTENERS = "listeners";
+    private static final String SUPPORTED_FEATURES = "supported_features";
 
     private static void writeVersion(JsonGenerator generator) throws IOException {
         generator.writeNumberField(VERSION_KEY, VERSION);
@@ -54,6 +57,8 @@ public class CoordinatorAddressJsonSerde
         generator.writeStringField(ID, coordinatorAddress.getId());
         generator.writeStringField(
                 LISTENERS, Endpoint.toListenersString(coordinatorAddress.getEndpoints()));
+        SupportedFeaturesJson.write(
+                SUPPORTED_FEATURES, coordinatorAddress.getSupportedFeatures(), generator);
         generator.writeEndObject();
     }
 
@@ -69,6 +74,11 @@ public class CoordinatorAddressJsonSerde
         } else {
             endpoints = Endpoint.fromListenersString(node.get(LISTENERS).asText());
         }
-        return new CoordinatorAddress(id, endpoints);
+        // coordinators that registered before cluster features existed register none
+        Map<String, SupportedLevelRange> supportedFeatures =
+                node.has(SUPPORTED_FEATURES)
+                        ? SupportedFeaturesJson.read(node.get(SUPPORTED_FEATURES))
+                        : Collections.emptyMap();
+        return new CoordinatorAddress(id, endpoints, supportedFeatures);
     }
 }

@@ -78,6 +78,7 @@ import org.apache.fluss.rpc.messages.DatabaseExistsResponse;
 import org.apache.fluss.rpc.messages.DeleteProducerOffsetsRequest;
 import org.apache.fluss.rpc.messages.DescribeBucketsRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterConfigsRequest;
+import org.apache.fluss.rpc.messages.DescribeClusterFeaturesRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterRequest;
 import org.apache.fluss.rpc.messages.DropAclsRequest;
 import org.apache.fluss.rpc.messages.DropDatabaseRequest;
@@ -105,18 +106,22 @@ import org.apache.fluss.rpc.messages.ListRemoteLogManifestsRequest;
 import org.apache.fluss.rpc.messages.ListTablesRequest;
 import org.apache.fluss.rpc.messages.ListTablesResponse;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
+import org.apache.fluss.rpc.messages.PbClusterFeature;
+import org.apache.fluss.rpc.messages.PbClusterFeatureLevel;
 import org.apache.fluss.rpc.messages.PbKeyValue;
 import org.apache.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import org.apache.fluss.rpc.messages.PbPartitionInfo;
 import org.apache.fluss.rpc.messages.PbTableInfo;
 import org.apache.fluss.rpc.messages.PbTablePath;
 import org.apache.fluss.rpc.messages.PbTableStatsRespForBucket;
+import org.apache.fluss.rpc.messages.PbTabletServerFeatureProgress;
 import org.apache.fluss.rpc.messages.RebalanceRequest;
 import org.apache.fluss.rpc.messages.RebalanceResponse;
 import org.apache.fluss.rpc.messages.RemoveServerTagByRackRequest;
 import org.apache.fluss.rpc.messages.RemoveServerTagRequest;
 import org.apache.fluss.rpc.messages.TableExistsRequest;
 import org.apache.fluss.rpc.messages.TableExistsResponse;
+import org.apache.fluss.rpc.messages.UpdateClusterFeaturesRequest;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.security.acl.AclBinding;
 import org.apache.fluss.security.acl.AclBindingFilter;
@@ -1219,6 +1224,69 @@ public class FlussAdmin implements Admin {
         return retryableCoordinatorGateway
                 .describeCluster(new DescribeClusterRequest())
                 .thenApply(ClientRpcMessageUtils::toClusterDescription);
+    }
+
+    @Override
+    public CompletableFuture<ClusterFeaturesDescription> describeClusterFeatures() {
+        // retried after a metadata refresh, so it also works right after a coordinator change
+        return retryableCoordinatorGateway
+                .describeClusterFeatures(new DescribeClusterFeaturesRequest())
+                .thenApply(
+                        response -> {
+                            List<ClusterFeatureDescription> features = new ArrayList<>();
+                            for (PbClusterFeature feature : response.getFeaturesList()) {
+                                features.add(
+                                        new ClusterFeatureDescription(
+                                                feature.getName(),
+                                                feature.getFinalizedLevel(),
+                                                feature.getSupportedLevel()));
+                            }
+                            List<TabletServerFeatureProgress> tabletServers = new ArrayList<>();
+                            for (PbTabletServerFeatureProgress progress :
+                                    response.getTabletServersList()) {
+                                Map<String, Integer> levels = new HashMap<>();
+                                for (PbClusterFeatureLevel level :
+                                        progress.getAppliedLevelsList()) {
+                                    levels.put(level.getName(), level.getLevel());
+                                }
+                                tabletServers.add(
+                                        new TabletServerFeatureProgress(
+                                                progress.getTabletServerId(),
+                                                progress.hasAppliedEpoch()
+                                                        ? progress.getAppliedEpoch()
+                                                        : null,
+                                                levels));
+                            }
+                            return new ClusterFeaturesDescription(
+                                    response.hasFeatureEpoch() ? response.getFeatureEpoch() : 0,
+                                    features,
+                                    tabletServers);
+                        });
+    }
+
+    @Override
+    public CompletableFuture<Void> updateClusterFeatures(
+            Map<String, Integer> featureLevels, boolean validateOnly) {
+        return updateClusterFeatures(
+                new UpdateClusterFeaturesRequest().setValidateOnly(validateOnly), featureLevels);
+    }
+
+    @Override
+    public CompletableFuture<Void> updateClusterFeatures(
+            Map<String, Integer> featureLevels, int expectedFeatureEpoch, boolean validateOnly) {
+        return updateClusterFeatures(
+                new UpdateClusterFeaturesRequest()
+                        .setValidateOnly(validateOnly)
+                        .setExpectedFeatureEpoch(expectedFeatureEpoch),
+                featureLevels);
+    }
+
+    private CompletableFuture<Void> updateClusterFeatures(
+            UpdateClusterFeaturesRequest request, Map<String, Integer> featureLevels) {
+        featureLevels.forEach((name, level) -> request.addFeature().setName(name).setLevel(level));
+        // A raise is idempotent, so it is safe to retry after a metadata refresh when the
+        // coordinator changed. A coordinator that lost leadership rejects it without any change.
+        return retryableCoordinatorGateway.updateClusterFeatures(request).thenApply(r -> null);
     }
 
     @VisibleForTesting

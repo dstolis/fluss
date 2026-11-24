@@ -18,12 +18,14 @@
 package org.apache.fluss.flink.action.orphan.rule;
 
 import org.apache.fluss.fs.FsPath;
+import org.apache.fluss.utils.FlussPaths;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LogSegmentRuleTest {
 
     private static final String SEGMENT_ID = "11111111-1111-1111-1111-111111111111";
+    private static final String COPY_ID = "22222222-2222-2222-2222-222222222222";
     private static final long NOW = 1_700_000_000_000L;
     private static final long DAY_MS = 24L * 60L * 60L * 1000L;
 
@@ -64,6 +67,25 @@ class LogSegmentRuleTest {
         Decision decision = rule.evaluate(file, activeRefs, CUTOFF_MS);
 
         assertThat(decision).isEqualTo(Decision.KEEP_ACTIVE);
+    }
+
+    @Test
+    void copyForOlderClientsFollowsItsSegment() {
+        String copyId = FlussPaths.remoteLogSegmentCopyId(UUID.fromString(SEGMENT_ID)).toString();
+        FileMeta copy =
+                file(
+                        "/log/db/t-1/0/" + SEGMENT_ID + "/" + copyId + "/00000000000000000000.log",
+                        NOW - 2 * DAY_MS);
+        Set<String> liveFiles = new HashSet<String>();
+        liveFiles.add(SEGMENT_ID + "/00000000000000000000.log");
+        BucketActiveRefs activeRefs =
+                new BucketActiveRefs(
+                        liveFiles, Collections.<String>emptySet(), Collections.<String>emptySet());
+
+        // kept while its segment is live, deleted like the segment once it is not
+        assertThat(rule.evaluate(copy, activeRefs, CUTOFF_MS)).isEqualTo(Decision.KEEP_ACTIVE);
+        assertThat(rule.evaluate(copy, BucketActiveRefs.empty(), CUTOFF_MS))
+                .isEqualTo(Decision.DELETE);
     }
 
     @Test
@@ -119,6 +141,26 @@ class LogSegmentRuleTest {
         Decision decision = rule.evaluate(file, BucketActiveRefs.empty(), CUTOFF_MS);
 
         assertThat(decision).isEqualTo(Decision.DELETE);
+    }
+
+    @Test
+    void keepCopyOfReferencedSegment() {
+        String copyFile =
+                "/log/db/t-1/0/" + SEGMENT_ID + "/" + COPY_ID + "/00000000000000000000.log";
+        Set<String> liveFiles = new HashSet<String>();
+        liveFiles.add(SEGMENT_ID + "/00000000000000000000.log");
+        BucketActiveRefs activeRefs =
+                new BucketActiveRefs(
+                        liveFiles, Collections.<String>emptySet(), Collections.<String>emptySet());
+
+        assertThat(rule.evaluate(file(copyFile, NOW - 2 * DAY_MS), activeRefs, CUTOFF_MS))
+                .isEqualTo(Decision.KEEP_ACTIVE);
+        assertThat(
+                        rule.evaluate(
+                                file(copyFile, NOW - 2 * DAY_MS),
+                                BucketActiveRefs.empty(),
+                                CUTOFF_MS))
+                .isEqualTo(Decision.DELETE);
     }
 
     private static FileMeta file(String path, long modificationTime) {

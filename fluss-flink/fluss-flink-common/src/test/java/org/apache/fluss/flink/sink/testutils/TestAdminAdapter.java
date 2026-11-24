@@ -19,6 +19,7 @@ package org.apache.fluss.flink.sink.testutils;
 
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.admin.ClusterDescription;
+import org.apache.fluss.client.admin.ClusterFeaturesDescription;
 import org.apache.fluss.client.admin.ClusterHealth;
 import org.apache.fluss.client.admin.CreateAclsResult;
 import org.apache.fluss.client.admin.DropAclsResult;
@@ -363,6 +364,23 @@ public class TestAdminAdapter implements Admin {
 
     @Override
     public CompletableFuture<ClusterDescription> describeCluster() {
+        throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
+    }
+
+    @Override
+    public CompletableFuture<ClusterFeaturesDescription> describeClusterFeatures() {
+        throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
+    }
+
+    @Override
+    public CompletableFuture<Void> updateClusterFeatures(
+            Map<String, Integer> featureLevels, boolean validateOnly) {
+        throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
+    }
+
+    @Override
+    public CompletableFuture<Void> updateClusterFeatures(
+            Map<String, Integer> featureLevels, int expectedFeatureEpoch, boolean validateOnly) {
         throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
     }
 

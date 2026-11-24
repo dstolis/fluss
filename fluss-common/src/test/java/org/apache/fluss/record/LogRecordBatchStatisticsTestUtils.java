@@ -61,6 +61,14 @@ public class LogRecordBatchStatisticsTestUtils {
      */
     public static MemoryLogRecords createLogRecordsWithStatistics(
             List<Object[]> data, RowType rowType, long baseOffset, int schemaId) throws Exception {
+        return createLogRecordsWithStatistics(
+                data, rowType, baseOffset, schemaId, LOG_MAGIC_VALUE_V2);
+    }
+
+    /** Creates one Arrow batch with statistics of the given magic, V1 or later. */
+    public static MemoryLogRecords createLogRecordsWithStatistics(
+            List<Object[]> data, RowType rowType, long baseOffset, int schemaId, byte magic)
+            throws Exception {
 
         try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
                 ArrowWriterPool writerPool = new ArrowWriterPool(allocator)) {
@@ -77,7 +85,7 @@ public class LogRecordBatchStatisticsTestUtils {
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
                             baseOffset,
-                            LOG_MAGIC_VALUE_V2,
+                            magic,
                             schemaId,
                             writer,
                             new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)),

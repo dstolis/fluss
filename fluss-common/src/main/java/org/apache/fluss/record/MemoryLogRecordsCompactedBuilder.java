@@ -53,6 +53,17 @@ public class MemoryLogRecordsCompactedBuilder extends MemoryLogRecordsRowBuilder
                 appendOnly);
     }
 
+    /** Builder with the given magic, which writers use to write log record batches of magic V3. */
+    public static MemoryLogRecordsCompactedBuilder builder(
+            int schemaId,
+            int writeLimit,
+            byte magic,
+            AbstractPagedOutputView outputView,
+            boolean appendOnly) {
+        return new MemoryLogRecordsCompactedBuilder(
+                BUILDER_DEFAULT_OFFSET, schemaId, writeLimit, magic, outputView, appendOnly);
+    }
+
     @VisibleForTesting
     public static MemoryLogRecordsCompactedBuilder builder(
             long baseLogOffset,

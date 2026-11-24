@@ -23,6 +23,7 @@ import org.apache.fluss.rpc.messages.ApiMessage;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.netty.client.NettyClient;
 import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -84,9 +85,40 @@ public interface RpcClient extends AutoCloseable {
     boolean isReady(ServerNode node);
 
     /**
+     * Returns the highest finalized level of the given cluster feature that a server this client is
+     * connected to has reported, without connecting to any server. Servers report the levels when a
+     * connection is opened. It is the baseline level of the feature while no connected server has
+     * reported a higher one.
+     *
+     * @param feature The cluster feature to check
+     * @return The highest reported finalized level
+     */
+    default int finalizedFeatureLevel(ClusterFeature feature) {
+        return feature.baselineLevel();
+    }
+
+    /**
      * Send an RPC request to the given server and return a future for the response. If the
      * requested node is not connected yet, it will try to {@link #connect(ServerNode)} the node
      * first.
      */
     CompletableFuture<ApiMessage> sendRequest(ServerNode node, ApiKeys apiKey, ApiMessage request);
+
+    /**
+     * Returns the version of the API the connection to the given node uses, or -1 if there is no
+     * connection yet, its API versions were not negotiated yet, or the node does not support the
+     * API.
+     */
+    default short negotiatedVersion(ServerNode node, ApiKeys apiKey) {
+        return -1;
+    }
+
+    /**
+     * Asks the given node for its API versions again on the existing connection, so later requests
+     * can use versions the node has started to advertise since. Completes when the new versions are
+     * in use, or right away if there is no connection to the node.
+     */
+    default CompletableFuture<Void> renegotiateApiVersions(ServerNode node) {
+        return CompletableFuture.completedFuture(null);
+    }
 }

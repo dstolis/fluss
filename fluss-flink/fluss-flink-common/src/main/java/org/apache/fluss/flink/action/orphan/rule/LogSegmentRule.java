@@ -33,6 +33,11 @@ import java.util.regex.Pattern;
  * .timeindex}, {@code .writer_snapshot}) that form an atomic unit. They are uploaded together by
  * tiering and referenced together by manifests. If the segment is not in any active manifest and
  * the file modification time is older than the cutoff, all four files are eligible for deletion.
+ *
+ * <p>A segment directory may also hold, in a nested UUID directory, a copy of the segment that the
+ * leader wrote for clients that cannot read its batch format ({@code
+ * {segment}/{copy_id}/{offset}.log}). Manifests do not reference copies; a copy is kept as long as
+ * its segment is referenced, and is deleted together with it.
  */
 @Internal
 public final class LogSegmentRule implements FileRule {
@@ -64,8 +69,25 @@ public final class LogSegmentRule implements FileRule {
         if (activeRefs.logSegmentRelativePaths().contains(relativePath)) {
             return Decision.KEEP_ACTIVE;
         }
+        FsPath grandParent = parent.getParent();
+        if (grandParent != null
+                && isSegmentDir(grandParent.getName())
+                && isReferencedSegmentDir(grandParent.getName(), activeRefs)) {
+            // a copy of a referenced segment, see the class comment
+            return Decision.KEEP_ACTIVE;
+        }
 
         return file.modificationTime() < cutoffMillis ? Decision.DELETE : Decision.DEFER;
+    }
+
+    private static boolean isReferencedSegmentDir(String dirName, BucketActiveRefs activeRefs) {
+        String prefix = dirName + "/";
+        for (String referenced : activeRefs.logSegmentRelativePaths()) {
+            if (referenced.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static boolean isSegmentDir(String dirName) {

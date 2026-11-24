@@ -29,6 +29,8 @@ import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.metrics.TestingClientMetricGroup;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.coordinator.TestCoordinatorGateway;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
 
@@ -53,6 +55,9 @@ public class TestingMetadataUpdater extends MetadataUpdater {
 
     private final TestCoordinatorGateway coordinatorGateway;
     private final Map<Integer, TestTabletServerGateway> tabletServerGatewayMap;
+
+    /** The finalized cluster feature levels the tablet servers reported to this client. */
+    private volatile ClusterFeatureLevels finalizedFeatureLevels = ClusterFeatureLevels.baseline();
 
     public TestingMetadataUpdater(Map<TablePath, TableInfo> tableInfos) {
         this(
@@ -85,6 +90,16 @@ public class TestingMetadataUpdater extends MetadataUpdater {
                         new TestTabletServerGateway(false, Collections.emptySet()));
             }
         }
+    }
+
+    /** Lets a tablet server report the given finalized level of the given cluster feature. */
+    public void setFinalizedFeatureLevel(ClusterFeature feature, int level) {
+        this.finalizedFeatureLevels = finalizedFeatureLevels.with(feature, level);
+    }
+
+    @Override
+    public int finalizedFeatureLevel(ClusterFeature feature) {
+        return finalizedFeatureLevels.level(feature);
     }
 
     public void updateTableInfos(Map<TablePath, TableInfo> tableInfos) {

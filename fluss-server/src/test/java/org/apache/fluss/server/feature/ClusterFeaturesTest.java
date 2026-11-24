@@ -1,0 +1,142 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to you under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.fluss.server.feature;
+
+import org.apache.fluss.exception.IllegalConfigurationException;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
+import org.apache.fluss.server.zk.NOPErrorHandler;
+import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.server.zk.ZooKeeperExtension;
+import org.apache.fluss.server.zk.data.ZkVersion;
+import org.apache.fluss.testutils.common.AllCallbackWrapper;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+
+import java.util.Collections;
+import java.util.Map;
+
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/** Tests for {@link ClusterFeatures}. */
+class ClusterFeaturesTest {
+
+    @RegisterExtension
+    static final AllCallbackWrapper<ZooKeeperExtension> ZOO_KEEPER_EXTENSION_WRAPPER =
+            new AllCallbackWrapper<>(new ZooKeeperExtension());
+
+    private static ZooKeeperClient zkClient;
+
+    @BeforeAll
+    static void beforeAll() {
+        zkClient =
+                ZOO_KEEPER_EXTENSION_WRAPPER
+                        .getCustomExtension()
+                        .getZooKeeperClient(NOPErrorHandler.INSTANCE);
+    }
+
+    @AfterEach
+    void afterEach() {
+        ZOO_KEEPER_EXTENSION_WRAPPER.getCustomExtension().cleanupRoot();
+    }
+
+    @AfterAll
+    static void afterAll() {
+        zkClient.close();
+    }
+
+    @Test
+    void testServerStartsWhileItSupportsTheFinalizedLevels() throws Exception {
+        // nothing finalized yet
+        assertThatCode(() -> ClusterFeatures.checkSupportsFinalizedFeatures(zkClient))
+                .doesNotThrowAnyException();
+
+        setFinalizedLevel(3);
+        assertThatCode(() -> ClusterFeatures.checkSupportsFinalizedFeatures(zkClient))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testServerRefusesToStartBelowTheFinalizedLevel() throws Exception {
+        // a newer version of the cluster finalized a level this server does not know
+        setFinalizedLevel(4);
+
+        assertThatThrownBy(() -> ClusterFeatures.checkSupportsFinalizedFeatures(zkClient))
+                .isInstanceOf(IllegalConfigurationException.class)
+                .hasMessageContaining(
+                        "does not support the finalized cluster features "
+                                + "[log.record-batch.version (supports [2, 3], finalized 4)]");
+    }
+
+    @Test
+    void testServerRefusesToStartWhenItDoesNotKnowAFinalizedFeature() throws Exception {
+        // a stored feature is above its baseline, so a version that does not know it lacks it
+        zkClient.createClusterFeatureLevels(
+                Collections.singletonMap("added-by-a-later-version", 1),
+                ZkVersion.MATCH_ANY_VERSION.getVersion());
+
+        assertThatThrownBy(() -> ClusterFeatures.checkSupportsFinalizedFeatures(zkClient))
+                .isInstanceOf(IllegalConfigurationException.class)
+                .hasMessageContaining(
+                        "[added-by-a-later-version (unknown to this version, finalized 1)]");
+    }
+
+    @Test
+    void testUnsupportedFeatures() {
+        assertThat(
+                        ClusterFeatures.unsupportedFeatures(
+                                Collections.emptyMap(), ClusterFeatureLevels.baseline()))
+                .isEmpty();
+        ClusterFeatureLevels raised =
+                ClusterFeatureLevels.baseline().with(LOG_RECORD_BATCH_VERSION, 3);
+        assertThat(ClusterFeatures.unsupportedFeatures(Collections.emptyMap(), raised))
+                .containsExactly("log.record-batch.version (supports [2, 2], finalized 3)");
+        assertThat(ClusterFeatures.unsupportedFeatures(ClusterFeatures.supportedFeatures(), raised))
+                .isEmpty();
+    }
+
+    @Test
+    void testServerWhoseMinimumIsAboveTheFinalizedLevelIsUnsupported() {
+        // a later release that dropped level 2 cannot join a cluster still at level 2
+        Map<String, SupportedLevelRange> droppedLevel2 =
+                Collections.singletonMap(
+                        LOG_RECORD_BATCH_VERSION.featureName(), new SupportedLevelRange(3, 4));
+        assertThat(
+                        ClusterFeatures.unsupportedFeatures(
+                                droppedLevel2, ClusterFeatureLevels.baseline()))
+                .containsExactly("log.record-batch.version (supports [3, 4], finalized 2)");
+        assertThat(
+                        ClusterFeatures.unsupportedFeatures(
+                                droppedLevel2,
+                                ClusterFeatureLevels.baseline().with(LOG_RECORD_BATCH_VERSION, 3)))
+                .isEmpty();
+    }
+
+    private static void setFinalizedLevel(int level) throws Exception {
+        zkClient.createClusterFeatureLevels(
+                Collections.singletonMap(LOG_RECORD_BATCH_VERSION.featureName(), level),
+                ZkVersion.MATCH_ANY_VERSION.getVersion());
+    }
+}

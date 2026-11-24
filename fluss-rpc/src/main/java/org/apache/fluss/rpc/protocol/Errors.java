@@ -40,6 +40,7 @@ import org.apache.fluss.exception.IneligibleReplicaException;
 import org.apache.fluss.exception.InsufficientKvLeaderReplicaCapacityException;
 import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidBucketRoutingException;
+import org.apache.fluss.exception.InvalidClusterFeatureUpdateException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
 import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidConsumerGroupIdException;
@@ -319,7 +320,11 @@ public enum Errors {
     CONSUMER_OFFSET_METADATA_TOO_LARGE(
             80,
             "The metadata field of the consumer offset request is too large.",
-            ConsumerOffsetMetadataTooLargeException::new);
+            ConsumerOffsetMetadataTooLargeException::new),
+    INVALID_CLUSTER_FEATURE_UPDATE(
+            81,
+            "The requested change of the cluster feature levels is not valid.",
+            InvalidClusterFeatureUpdateException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 

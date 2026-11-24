@@ -71,6 +71,9 @@ public final class FetchParams {
     private final int minFetchBytes;
     private final long maxWaitMs;
     private final FetchLogReadPreference readPreference;
+
+    // the highest batch magic the reader's version can read, see setReaderMaxBatchMagic
+    private byte readerMaxBatchMagic = Byte.MAX_VALUE;
     // TODO: add more params like epoch etc.
 
     public FetchParams(int replicaId, int maxFetchBytes) {
@@ -213,6 +216,29 @@ public final class FetchParams {
 
     public int replicaId() {
         return replicaId;
+    }
+
+    /**
+     * Sets the highest batch magic the reader's {@code FETCH_LOG} version can read. Whether that
+     * matters is decided at each read of the fetch against the level the server has applied, also
+     * when a delayed fetch reads again after a raise: a client then gets the batches above it
+     * converted, and a follower is refused, as replicas must copy the original batches.
+     */
+    public void setReaderMaxBatchMagic(byte readerMaxBatchMagic) {
+        this.readerMaxBatchMagic = readerMaxBatchMagic;
+    }
+
+    /**
+     * Whether the reader may get batches it cannot read, because the given finalized level of the
+     * log record batch version allows batches above {@link #readerMaxBatchMagic()}.
+     */
+    public boolean readerIsBelow(int finalizedBatchLevel) {
+        return readerMaxBatchMagic < finalizedBatchLevel;
+    }
+
+    /** The highest batch magic the reader can read. */
+    public byte readerMaxBatchMagic() {
+        return readerMaxBatchMagic;
     }
 
     public boolean isFromFollower() {

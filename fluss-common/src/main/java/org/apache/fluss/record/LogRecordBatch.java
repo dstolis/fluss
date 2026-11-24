@@ -146,7 +146,9 @@ public interface LogRecordBatch {
      *
      * @return batch last sequence
      */
-    int lastSequence();
+    default int lastSequence() {
+        return batchSequence();
+    }
 
     /**
      * Get the writer epoch of this log record batch. Batches with a magic lower than V3 have no
@@ -154,7 +156,9 @@ public interface LogRecordBatch {
      *
      * @return writer epoch
      */
-    short writerEpoch();
+    default short writerEpoch() {
+        return LogRecordBatchFormat.NO_WRITER_EPOCH;
+    }
 
     /**
      * Get leader epoch of this bucket for this log record batch.

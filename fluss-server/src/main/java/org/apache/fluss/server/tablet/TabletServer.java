@@ -32,12 +32,17 @@ import org.apache.fluss.rpc.messages.ControlledShutdownRequest;
 import org.apache.fluss.rpc.messages.ControlledShutdownResponse;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.netty.server.RequestsMetrics;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.DynamicConfigManager;
 import org.apache.fluss.server.ServerBase;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.authorizer.AuthorizerLoader;
 import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.MetadataManager;
+import org.apache.fluss.server.feature.ClusterFeatures;
+import org.apache.fluss.server.feature.ClusterFeaturesWatcher;
+import org.apache.fluss.server.feature.FinalizedClusterFeatures;
 import org.apache.fluss.server.kv.KvCloseMode;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.scan.ScannerManager;
@@ -53,7 +58,9 @@ import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.storage.LocalDiskManager;
 import org.apache.fluss.server.tablet.consumer.group.ConsumerOffsetTableConfig;
 import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
 import org.apache.fluss.server.zk.ZooKeeperUtils;
+import org.apache.fluss.server.zk.data.AppliedClusterFeatures;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.utils.ExceptionUtils;
@@ -75,6 +82,9 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -155,6 +165,9 @@ public class TabletServer extends ServerBase {
     private ReplicaManager replicaManager;
 
     @GuardedBy("lock")
+    private ClusterFeaturesWatcher clusterFeaturesWatcher;
+
+    @GuardedBy("lock")
     private ScannerManager scannerManager;
 
     @GuardedBy("lock")
@@ -233,6 +246,8 @@ public class TabletServer extends ServerBase {
             this.userMetrics = new UserMetrics(scheduler, metricRegistry, tabletServerMetricGroup);
 
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
+            // refuse to start before loading any data written at a level this server can't read
+            ClusterFeatures.checkSupportsFinalizedFeatures(zkClient);
 
             this.lakeCatalogDynamicLoader =
                     new LakeCatalogDynamicLoader(conf, pluginManager, false);
@@ -310,6 +325,24 @@ public class TabletServer extends ServerBase {
                             ioExecutor,
                             localDiskManager,
                             pluginManager);
+            // apply the finalized cluster feature levels before serving, then follow their changes,
+            // and read them again in the background when a level the watch has not applied yet is
+            // asked for
+            FinalizedClusterFeatures clusterFeatures = replicaManager.getClusterFeatures();
+            Optional<VersionedData<Map<String, Integer>>> storedLevels =
+                    zkClient.getClusterFeatureLevels();
+            if (storedLevels.isPresent()) {
+                clusterFeatures.apply(
+                        ClusterFeatureLevels.fromMap(storedLevels.get().data()),
+                        storedLevels.get().zkVersion());
+            }
+            clusterFeatures.setStoredLevelsReader(zkClient::getClusterFeatureLevels, ioExecutor);
+            // report the applied levels, so the coordinator can show who lags behind a raise
+            clusterFeatures.setAppliedListener(
+                    () -> ioExecutor.execute(this::reportAppliedClusterFeatures));
+            this.clusterFeaturesWatcher =
+                    new ClusterFeaturesWatcher(zkClient, replicaManager.getClusterFeatures(), this);
+            clusterFeaturesWatcher.start();
             replicaManager.startup();
 
             this.tabletService =
@@ -390,6 +423,24 @@ public class TabletServer extends ServerBase {
         return terminationFuture;
     }
 
+    /**
+     * Reports the cluster feature levels this server has applied in ZooKeeper. A failure is only
+     * logged: the report is informational, and the next change or ZooKeeper session reports again.
+     */
+    private void reportAppliedClusterFeatures() {
+        FinalizedClusterFeatures clusterFeatures = replicaManager.getClusterFeatures();
+        Map<String, Integer> levels = new TreeMap<>();
+        for (ClusterFeature feature : ClusterFeature.values()) {
+            levels.put(feature.featureName(), clusterFeatures.levels().level(feature));
+        }
+        try {
+            zkClient.reportAppliedClusterFeatures(
+                    serverId, new AppliedClusterFeatures(clusterFeatures.epoch(), levels));
+        } catch (Exception e) {
+            LOG.warn("Failed to report the applied cluster feature levels {}.", levels, e);
+        }
+    }
+
     private void registerTabletServer() throws Exception {
         long startTime = System.currentTimeMillis();
         List<Endpoint> bindEndpoints = rpcServer.getBindEndpoints();
@@ -399,7 +450,8 @@ public class TabletServer extends ServerBase {
                         rack,
                         Endpoint.loadAdvertisedEndpoints(bindEndpoints, conf),
                         startTime,
-                        tabletServerResource);
+                        tabletServerResource,
+                        ClusterFeatures.supportedFeatures());
 
         while (true) {
             try {
@@ -429,6 +481,8 @@ public class TabletServer extends ServerBase {
                 }
             }
         }
+        // the report is ephemeral too, so it is made again with every new ZooKeeper session
+        reportAppliedClusterFeatures();
     }
 
     CompletableFuture<Void> stopServices() {
@@ -544,6 +598,10 @@ public class TabletServer extends ServerBase {
 
                 if (lakeCatalogDynamicLoader != null) {
                     lakeCatalogDynamicLoader.close();
+                }
+
+                if (clusterFeaturesWatcher != null) {
+                    clusterFeaturesWatcher.close();
                 }
 
                 if (zkClient != null) {

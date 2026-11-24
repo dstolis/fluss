@@ -39,6 +39,8 @@ import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.AdminReadOnlyGateway;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
@@ -141,6 +144,31 @@ public class MetadataUpdater {
 
     public @Nullable ServerNode getRandomTabletServer() {
         return cluster.getRandomTabletServer();
+    }
+
+    /**
+     * Returns the highest finalized level of the given cluster feature that a server this client is
+     * connected to has reported.
+     */
+    public int finalizedFeatureLevel(ClusterFeature feature) {
+        return rpcClient.finalizedFeatureLevel(feature);
+    }
+
+    /**
+     * Returns the version of the API the connection to the given tablet server uses, or -1 if it is
+     * not known, for example because there is no connection to it yet.
+     */
+    public short negotiatedVersion(int serverId, ApiKeys apiKey) {
+        ServerNode serverNode = getTabletServer(serverId);
+        return serverNode == null ? -1 : rpcClient.negotiatedVersion(serverNode, apiKey);
+    }
+
+    /** Asks the given tablet server for its API versions again on the existing connection. */
+    public CompletableFuture<Void> renegotiateApiVersions(int serverId) {
+        ServerNode serverNode = getTabletServer(serverId);
+        return serverNode == null
+                ? CompletableFuture.completedFuture(null)
+                : rpcClient.renegotiateApiVersions(serverNode);
     }
 
     public CoordinatorGateway newCoordinatorServerClient() {

@@ -54,6 +54,8 @@ import org.apache.fluss.plugin.PluginManager;
 import org.apache.fluss.record.DefaultKvRecordBatch;
 import org.apache.fluss.record.KeyRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
+import org.apache.fluss.record.LogRecordBatchConverter;
+import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.record.ProjectionPushdownCache;
 import org.apache.fluss.remote.RemoteLogFetchInfo;
@@ -90,6 +92,8 @@ import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.entity.StopReplicaData;
 import org.apache.fluss.server.entity.StopReplicaResultForBucket;
 import org.apache.fluss.server.entity.UserContext;
+import org.apache.fluss.server.feature.ActiveCoordinatorFeatureCheck;
+import org.apache.fluss.server.feature.FinalizedClusterFeatures;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvSnapshotResource;
 import org.apache.fluss.server.kv.scan.ScannerManager;
@@ -104,6 +108,7 @@ import org.apache.fluss.server.log.LogOffsetMetadata;
 import org.apache.fluss.server.log.LogReadInfo;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.log.checkpoint.OffsetCheckpointFile;
+import org.apache.fluss.server.log.remote.RemoteLogCompatCopies;
 import org.apache.fluss.server.log.remote.RemoteLogManager;
 import org.apache.fluss.server.metadata.ClusterMetadata;
 import org.apache.fluss.server.metadata.TableMetadata;
@@ -169,6 +174,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.apache.fluss.config.ConfigOptions.KV_FORMAT_VERSION_2;
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.server.TabletManagerBase.getPartitionRegistration;
 import static org.apache.fluss.server.TabletManagerBase.getSchemaInfo;
 import static org.apache.fluss.server.TabletManagerBase.getTableRegistration;
@@ -181,6 +187,9 @@ import static org.apache.fluss.utils.concurrent.LockUtils.inLock;
 public class ReplicaManager implements ServerReconfigurable {
     private static final Logger LOG = LoggerFactory.getLogger(ReplicaManager.class);
 
+    /** The minimum time between two logged refusals of followers below the finalized level. */
+    private static final long FOLLOWER_REFUSAL_LOG_INTERVAL_MS = 60_000L;
+
     public static final String HIGH_WATERMARK_CHECKPOINT_FILE_NAME = "high-watermark-checkpoint";
 
     /**
@@ -192,6 +201,8 @@ public class ReplicaManager implements ServerReconfigurable {
     private static final short PUT_KV_VERSION_WITH_STORAGE_BACKPRESSURE = 2;
 
     private final Configuration conf;
+    private final FinalizedClusterFeatures clusterFeatures;
+    @Nullable private final ActiveCoordinatorFeatureCheck activeCoordinatorCheck;
     private final Scheduler scheduler;
     private final LogManager logManager;
     private final KvManager kvManager;
@@ -240,6 +251,7 @@ public class ReplicaManager implements ServerReconfigurable {
 
     // remote log manager for remote log storage.
     private final RemoteLogManager remoteLogManager;
+    private final OldReaderRemoteFetcher oldReaderRemoteFetcher;
 
     // for metrics
     private final TabletServerMetricGroup serverMetricGroup;
@@ -247,6 +259,9 @@ public class ReplicaManager implements ServerReconfigurable {
     private final String internalListenerName;
 
     private final Clock clock;
+
+    /** When a refused fetch was last logged, see refuseFollowerBelowLevel. */
+    private volatile long lastFollowerRefusalLogMs = Long.MIN_VALUE / 2;
 
     private final ScannerManager scannerManager;
 
@@ -324,6 +339,11 @@ public class ReplicaManager implements ServerReconfigurable {
             @Nullable PluginManager pluginManager)
             throws IOException {
         this.conf = conf;
+        this.clusterFeatures = new FinalizedClusterFeatures(clock);
+        this.activeCoordinatorCheck =
+                zkClient == null
+                        ? null
+                        : new ActiveCoordinatorFeatureCheck(zkClient, clusterFeatures);
         this.zkClient = zkClient;
         this.scheduler = scheduler;
         this.localDiskManager = localDiskManager;
@@ -367,6 +387,8 @@ public class ReplicaManager implements ServerReconfigurable {
                 DefaultSnapshotContext.create(
                         zkClient, completedKvSnapshotCommitter, kvSnapshotResource, conf);
         this.remoteLogManager = remoteLogManager;
+        this.oldReaderRemoteFetcher =
+                new OldReaderRemoteFetcher(remoteLogManager, new RemoteLogCompatCopies());
         this.serverMetricGroup = serverMetricGroup;
         this.userMetrics = userMetrics;
         this.clock = clock;
@@ -685,6 +707,11 @@ public class ReplicaManager implements ServerReconfigurable {
                 }
             }
         }
+    }
+
+    /** The finalized cluster feature levels applied on this server. */
+    public FinalizedClusterFeatures getClusterFeatures() {
+        return clusterFeatures;
     }
 
     @VisibleForTesting
@@ -1641,6 +1668,11 @@ public class ReplicaManager implements ServerReconfigurable {
         for (Map.Entry<TableBucket, MemoryLogRecords> entry : entriesPerBucket.entrySet()) {
             TableBucket tb = entry.getKey();
             MemoryLogRecords records = entry.getValue();
+            ApiError unfinalizedFormat = clusterFeatures.checkWrite(records);
+            if (unfinalizedFormat != null) {
+                resultForBucketMap.put(tb, new ProduceLogResultForBucket(tb, unfinalizedFormat));
+                continue;
+            }
             TableMetricGroup tableMetrics = null;
             try {
                 Replica replica = getReplicaOrException(tb);
@@ -1816,6 +1848,14 @@ public class ReplicaManager implements ServerReconfigurable {
             @Nullable UserContext userContext) {
         Map<TableBucket, LogReadResult> logReadResult = new HashMap<>();
         boolean isFromFollower = fetchParams.isFromFollower();
+        // Decided at every read, not when the fetch arrived: a delayed fetch reads again after a
+        // raise may have let V3 batches in.
+        boolean readerIsBelowLevel =
+                fetchParams.readerIsBelow(clusterFeatures.levels().level(LOG_RECORD_BATCH_VERSION));
+        if (isFromFollower && readerIsBelowLevel) {
+            return refuseFollowerBelowLevel(fetchParams, bucketFetchInfo);
+        }
+        boolean convertsBatches = readerIsBelowLevel;
         int limitBytes = fetchParams.maxFetchBytes();
         for (Map.Entry<TableBucket, FetchReqInfo> entry : bucketFetchInfo.entrySet()) {
             TableBucket tb = entry.getKey();
@@ -1855,6 +1895,14 @@ public class ReplicaManager implements ServerReconfigurable {
                 if (fetchParams.isRemoteFirstClientFetch()) {
                     FetchLogResultForBucket remoteFirstFetchResult =
                             tryFetchRemoteFirst(replica, fetchOffset);
+                    if (remoteFirstFetchResult != null && convertsBatches) {
+                        remoteFirstFetchResult =
+                                oldReaderRemoteFetcher.fetch(
+                                        replica,
+                                        remoteFirstFetchResult,
+                                        adjustedMaxBytes,
+                                        fetchParams);
+                    }
                     if (remoteFirstFetchResult != null) {
                         logReadResult.put(
                                 tb,
@@ -1875,10 +1923,16 @@ public class ReplicaManager implements ServerReconfigurable {
                     fetchParams.markReadOneMessage();
                 }
                 limitBytes = Math.max(0, limitBytes - recordBatchSize);
+                LogRecords records = fetchedData.getRecords();
+                if (convertsBatches) {
+                    records =
+                            LogRecordBatchConverter.convert(
+                                    records, fetchParams.readerMaxBatchMagic());
+                }
                 FetchLogResultForBucket fetchLogResult =
                         FetchLogResultForBucket.records(
                                 tb,
-                                fetchedData.getRecords(),
+                                records,
                                 readInfo.getHighWatermark(),
                                 fetchedData.hasFilteredEndOffset()
                                         ? fetchedData.getFilteredEndOffset()
@@ -1911,6 +1965,11 @@ public class ReplicaManager implements ServerReconfigurable {
                 FetchLogResultForBucket result;
                 if (replica != null && e instanceof LogOffsetOutOfRangeException) {
                     result = handleFetchOutOfRangeException(replica, fetchOffset, e);
+                    if (convertsBatches) {
+                        result =
+                                oldReaderRemoteFetcher.fetch(
+                                        replica, result, adjustedMaxBytes, fetchParams);
+                    }
                 } else {
                     result = FetchLogResultForBucket.error(tb, ApiError.fromThrowable(e));
                 }
@@ -1919,6 +1978,45 @@ public class ReplicaManager implements ServerReconfigurable {
             }
         }
         return logReadResult;
+    }
+
+    /**
+     * Refuses a follower whose {@code FETCH_LOG} version cannot read the batches the applied level
+     * allows, such as a tablet server of an older version admitted by an older coordinator. A
+     * follower must copy the original batches, so it can't get converted ones; it stays out of the
+     * ISR until it is upgraded.
+     */
+    private Map<TableBucket, LogReadResult> refuseFollowerBelowLevel(
+            FetchParams fetchParams, Map<TableBucket, FetchReqInfo> bucketFetchInfo) {
+        UnsupportedVersionException error =
+                new UnsupportedVersionException(
+                        String.format(
+                                "Follower %s reads log record batches up to magic %s, but the "
+                                        + "cluster finalized %s. Upgrade the follower.",
+                                fetchParams.replicaId(),
+                                fetchParams.readerMaxBatchMagic(),
+                                clusterFeatures.levels()));
+        // the follower retries at once, so only log the first refusal of every interval
+        long now = clock.milliseconds();
+        long lastLogged = lastFollowerRefusalLogMs;
+        if (now - lastLogged >= FOLLOWER_REFUSAL_LOG_INTERVAL_MS) {
+            lastFollowerRefusalLogMs = now;
+            LOG.warn(
+                    "Refusing fetches of followers below the finalized level, logged at most "
+                            + "once a minute: {}",
+                    error.getMessage());
+        } else {
+            LOG.debug("Refusing a fetch: {}", error.getMessage());
+        }
+        Map<TableBucket, LogReadResult> results = new HashMap<>();
+        for (TableBucket tb : bucketFetchInfo.keySet()) {
+            results.put(
+                    tb,
+                    new LogReadResult(
+                            FetchLogResultForBucket.error(tb, ApiError.fromThrowable(error)),
+                            LogOffsetMetadata.UNKNOWN_OFFSET_METADATA));
+        }
+        return results;
     }
 
     private @Nullable FetchLogResultForBucket tryFetchRemoteFirst(
@@ -2491,7 +2589,11 @@ public class ReplicaManager implements ServerReconfigurable {
                             requestCoordinatorEpoch, requestName, this.coordinatorEpoch);
             LOG.warn("Ignore the {} request because {}", requestName, errorMessage);
             throw new InvalidCoordinatorException(errorMessage);
-        } else if (requestCoordinatorEpoch > this.coordinatorEpoch) {
+        }
+        if (activeCoordinatorCheck != null) {
+            activeCoordinatorCheck.check(requestCoordinatorEpoch, requestName);
+        }
+        if (requestCoordinatorEpoch > this.coordinatorEpoch) {
             LOG.info(
                     "Update coordinator epoch from {} to {} for coordinator leader switch.",
                     this.coordinatorEpoch,
@@ -2740,6 +2842,7 @@ public class ReplicaManager implements ServerReconfigurable {
         replicaFetcherManager.shutdown();
         delayedWriteManager.shutdown();
         delayedFetchLogManager.shutdown();
+        oldReaderRemoteFetcher.close();
 
         // Checkpoint highWatermark.
         checkpointHighWatermarks();

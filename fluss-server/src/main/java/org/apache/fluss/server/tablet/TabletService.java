@@ -17,6 +17,7 @@
 
 package org.apache.fluss.server.tablet;
 
+import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.exception.ApiException;
 import org.apache.fluss.exception.AuthorizationException;
@@ -27,14 +28,18 @@ import org.apache.fluss.exception.ScannerExpiredException;
 import org.apache.fluss.exception.StaleMetadataException;
 import org.apache.fluss.exception.UnknownScannerIdException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
+import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.DefaultValueRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
+import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.record.LogRecordBatchConverter;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
+import org.apache.fluss.rpc.entity.LimitScanResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
 import org.apache.fluss.rpc.entity.PrefixLookupResultForBucket;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
@@ -43,6 +48,8 @@ import org.apache.fluss.rpc.entity.ResultForBucket;
 import org.apache.fluss.rpc.entity.TableStatsResultForBucket;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.ApiVersionsRequest;
+import org.apache.fluss.rpc.messages.ApiVersionsResponse;
 import org.apache.fluss.rpc.messages.CommitConsumerOffsetsRequest;
 import org.apache.fluss.rpc.messages.CommitConsumerOffsetsResponse;
 import org.apache.fluss.rpc.messages.DeleteConsumerGroupsRequest;
@@ -79,6 +86,7 @@ import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrResponse;
 import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsRequest;
 import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsResponse;
+import org.apache.fluss.rpc.messages.PbApiVersion;
 import org.apache.fluss.rpc.messages.PbFetchLogReqForTable;
 import org.apache.fluss.rpc.messages.PbScanReqForBucket;
 import org.apache.fluss.rpc.messages.PrefixLookupRequest;
@@ -95,9 +103,13 @@ import org.apache.fluss.rpc.messages.UpdateMetadataRequest;
 import org.apache.fluss.rpc.messages.UpdateMetadataResponse;
 import org.apache.fluss.rpc.netty.server.Session;
 import org.apache.fluss.rpc.protocol.ApiError;
+import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.FetchLogReadPreference;
 import org.apache.fluss.rpc.protocol.MergeMode;
+import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
 import org.apache.fluss.server.DynamicConfigManager;
@@ -114,6 +126,7 @@ import org.apache.fluss.server.entity.ProduceLogDataForBucket;
 import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.entity.StopReplicaData;
 import org.apache.fluss.server.entity.UserContext;
+import org.apache.fluss.server.feature.FinalizedClusterFeatures;
 import org.apache.fluss.server.kv.scan.OpenScanResult;
 import org.apache.fluss.server.kv.scan.ScannerContext;
 import org.apache.fluss.server.kv.scan.ScannerManager;
@@ -153,6 +166,7 @@ import java.util.function.Function;
 import java.util.function.ToIntFunction;
 import java.util.stream.Collectors;
 
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.hasHistoricalLookup;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.hasHistoricalProduce;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.hasHistoricalPut;
@@ -268,6 +282,41 @@ public final class TabletService extends RpcServiceBase
     @Override
     public void shutdown() {}
 
+    /**
+     * Also reports the finalized level of every cluster feature, as applied on this tablet server,
+     * in two ways: in the finalized features of the response, and by advertising only the versions
+     * of the write APIs that carry the applied levels, for example {@code PRODUCE_LOG} v2 for log
+     * record batches of magic V3. Writers learn from either when they may use a level. Clients ask
+     * for the API versions when they open a connection, or again when they need a newer version.
+     *
+     * <p>If a level is not applied yet, the stored levels are read again first, at most once per
+     * {@link FinalizedClusterFeatures#REFRESH_INTERVAL_MS}, so a client asking right after a raise
+     * is not answered with the old level.
+     */
+    @Override
+    public CompletableFuture<ApiVersionsResponse> apiVersions(ApiVersionsRequest request) {
+        return super.apiVersions(request)
+                .thenApply(
+                        response -> {
+                            FinalizedClusterFeatures clusterFeatures =
+                                    replicaManager.getClusterFeatures();
+                            for (ClusterFeature feature : ClusterFeature.values()) {
+                                clusterFeatures.isFinalizedAtLeast(feature, feature.latestLevel());
+                            }
+                            ClusterFeatureLevels applied = clusterFeatures.levels();
+                            for (PbApiVersion apiVersion : response.getApiVersionsList()) {
+                                ApiKeys api = ApiKeys.forId(apiVersion.getApiKey());
+                                apiVersion.setMaxVersion(
+                                        Math.min(
+                                                apiVersion.getMaxVersion(),
+                                                ApiFeatureContracts.highestAdvertisedVersion(
+                                                        api, applied)));
+                            }
+                            applied.reportIn(response);
+                            return response;
+                        });
+    }
+
     @Override
     public CompletableFuture<ProduceLogResponse> produceLog(ProduceLogRequest request) {
         authorizeTable(WRITE, request.getTableId());
@@ -285,6 +334,8 @@ public final class TabletService extends RpcServiceBase
                 routingErrors);
 
         List<ProduceLogDataForBucket> produceLogData = toProduceLogDataForBuckets(request);
+        collectUnsupportedFormatErrors(
+                produceLogData, currentSession().getApiVersion(), routingErrors);
         if (!routingErrors.isEmpty()) {
             produceLogData.removeIf(
                     bucketData -> routingErrors.containsKey(bucketData.tableBucket()));
@@ -320,6 +371,42 @@ public final class TabletService extends RpcServiceBase
                     responseCallback);
         }
         return response;
+    }
+
+    /**
+     * Rejects the buckets whose log record batches have a format the version of the request cannot
+     * carry, for example magic V3 in {@code PRODUCE_LOG} v1. Such a bucket is left out of the
+     * append and answered with a retriable error, like a bucket with a routing error, and the
+     * writer asks for the API versions again. The leader also checks the level it has applied, see
+     * {@link FinalizedClusterFeatures#checkWrite}.
+     */
+    @VisibleForTesting
+    static void collectUnsupportedFormatErrors(
+            List<ProduceLogDataForBucket> produceLogData,
+            short apiVersion,
+            Map<TableBucket, ProduceLogResultForBucket> errors) {
+        int versionLevel =
+                ApiFeatureContracts.maxLevel(
+                        ApiKeys.PRODUCE_LOG, apiVersion, LOG_RECORD_BATCH_VERSION);
+        for (ProduceLogDataForBucket bucketData : produceLogData) {
+            TableBucket tb = bucketData.tableBucket();
+            for (LogRecordBatch batch : bucketData.records().batches()) {
+                if (batch.magic() > versionLevel) {
+                    UnsupportedVersionException error =
+                            new UnsupportedVersionException(
+                                    String.format(
+                                            "PRODUCE_LOG version %s carries log record batches up "
+                                                    + "to magic %s, but bucket %s has a batch of "
+                                                    + "magic %s. Ask the server for its API "
+                                                    + "versions again to negotiate a newer "
+                                                    + "version.",
+                                            apiVersion, versionLevel, tb, batch.magic()));
+                    errors.putIfAbsent(
+                            tb, new ProduceLogResultForBucket(tb, ApiError.fromThrowable(error)));
+                    break;
+                }
+            }
+        }
     }
 
     /**
@@ -383,6 +470,9 @@ public final class TabletService extends RpcServiceBase
 
         CompletableFuture<FetchLogResponse> response = new CompletableFuture<>();
         FetchParams fetchParams = getFetchParams(request);
+        // each read compares this with the applied level, see FetchParams#setReaderMaxBatchMagic
+        fetchParams.setReaderMaxBatchMagic(
+                (byte) readableBatchLevel(ApiKeys.FETCH_LOG, currentSession().getApiVersion()));
         replicaManager.fetchLogRecords(
                 fetchParams,
                 interesting,
@@ -391,6 +481,30 @@ public final class TabletService extends RpcServiceBase
                         response.complete(
                                 makeFetchLogResponse(fetchResponseMap, errorResponseMap)));
         return response;
+    }
+
+    /** The highest log record batch level the given version of a read API can return as stored. */
+    private static int readableBatchLevel(ApiKeys api, short apiVersion) {
+        return Math.min(
+                ApiFeatureContracts.maxLevel(api, apiVersion, LOG_RECORD_BATCH_VERSION),
+                Byte.MAX_VALUE);
+    }
+
+    /** Converts the log record batches of a limit scan the reader's version cannot read. */
+    private LimitScanResultForBucket convertForReader(
+            LimitScanResultForBucket result, int readableLevel) {
+        if (result.failed()
+                || result.getRecords() == null
+                || finalizedFeatures().level(LOG_RECORD_BATCH_VERSION) <= readableLevel) {
+            return result;
+        }
+        return new LimitScanResultForBucket(
+                result.getTableBucket(),
+                LogRecordBatchConverter.convert(result.getRecords(), (byte) readableLevel));
+    }
+
+    private ClusterFeatureLevels finalizedFeatures() {
+        return replicaManager.getClusterFeatures().levels();
     }
 
     private static FetchParams getFetchParams(FetchLogRequest request) {
@@ -595,13 +709,17 @@ public final class TabletService extends RpcServiceBase
                 request.hasRoutingBucketCount() ? request.getRoutingBucketCount() : 0);
 
         CompletableFuture<LimitScanResponse> response = new CompletableFuture<>();
+        int readableLevel =
+                readableBatchLevel(ApiKeys.LIMIT_SCAN, currentSession().getApiVersion());
         replicaManager.limitScan(
                 new TableBucket(
                         request.getTableId(),
                         request.hasPartitionId() ? request.getPartitionId() : null,
                         request.getBucketId()),
                 request.getLimit(),
-                value -> response.complete(makeLimitScanResponse(value)));
+                value ->
+                        response.complete(
+                                makeLimitScanResponse(convertForReader(value, readableLevel))));
         return response;
     }
 

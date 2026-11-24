@@ -19,6 +19,7 @@ package org.apache.fluss.server.zk.data;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.cluster.Endpoint;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.metadata.TabletServerResource;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
@@ -28,6 +29,7 @@ import org.apache.fluss.utils.json.JsonSerializer;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.apache.fluss.config.ConfigOptions.DEFAULT_LISTENER_NAME;
 
@@ -41,7 +43,8 @@ public class TabletServerRegistrationJsonSerde
             new TabletServerRegistrationJsonSerde();
 
     private static final String VERSION_KEY = "version";
-    private static final int VERSION = 4;
+    // Version 5 adds the supported cluster features.
+    private static final int VERSION = 5;
 
     @Deprecated private static final String HOST = "host";
     @Deprecated private static final String PORT = "port";
@@ -50,6 +53,7 @@ public class TabletServerRegistrationJsonSerde
     private static final String RACK = "rack";
     private static final String CPU_CORES = "cpu_cores";
     private static final String MEMORY_BYTES = "memory_bytes";
+    private static final String SUPPORTED_FEATURES = "supported_features";
 
     @Override
     public void serialize(
@@ -71,6 +75,8 @@ public class TabletServerRegistrationJsonSerde
         if (resource.getMemoryBytes() != null) {
             generator.writeNumberField(MEMORY_BYTES, resource.getMemoryBytes());
         }
+        SupportedFeaturesJson.write(
+                SUPPORTED_FEATURES, tabletServerRegistration.getSupportedFeatures(), generator);
         generator.writeEndObject();
     }
 
@@ -80,6 +86,7 @@ public class TabletServerRegistrationJsonSerde
         List<Endpoint> endpoints;
         String rack = null;
         TabletServerResource resource = TabletServerResource.unknown();
+        Map<String, SupportedLevelRange> supportedFeatures = Collections.emptyMap();
         if (version == 1) {
             String host = node.get(HOST).asText();
             int port = node.get(PORT).asInt();
@@ -91,14 +98,18 @@ public class TabletServerRegistrationJsonSerde
             if (node.has(RACK)) {
                 rack = node.get(RACK).asText();
             }
-            if (version >= VERSION) {
+            if (version >= 4) {
                 Double cpuCores = node.has(CPU_CORES) ? node.get(CPU_CORES).asDouble() : null;
                 Long memoryBytes = node.has(MEMORY_BYTES) ? node.get(MEMORY_BYTES).asLong() : null;
                 resource = new TabletServerResource(cpuCores, memoryBytes);
             }
         }
 
+        if (node.has(SUPPORTED_FEATURES)) {
+            supportedFeatures = SupportedFeaturesJson.read(node.get(SUPPORTED_FEATURES));
+        }
         long registerTimestamp = node.get(REGISTER_TIMESTAMP).asLong();
-        return new TabletServerRegistration(rack, endpoints, registerTimestamp, resource);
+        return new TabletServerRegistration(
+                rack, endpoints, registerTimestamp, resource, supportedFeatures);
     }
 }

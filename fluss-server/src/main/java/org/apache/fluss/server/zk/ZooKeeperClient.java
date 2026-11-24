@@ -45,6 +45,7 @@ import org.apache.fluss.server.zk.ZkAsyncRequest.ZkGetDataRequest;
 import org.apache.fluss.server.zk.ZkAsyncResponse.ZkCheckExistsResponse;
 import org.apache.fluss.server.zk.ZkAsyncResponse.ZkGetChildrenResponse;
 import org.apache.fluss.server.zk.ZkAsyncResponse.ZkGetDataResponse;
+import org.apache.fluss.server.zk.data.AppliedClusterFeatures;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.BucketSnapshot;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
@@ -99,6 +100,7 @@ import org.apache.fluss.shaded.curator5.org.apache.curator.framework.CuratorFram
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.api.BackgroundCallback;
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.api.CuratorEvent;
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.api.transaction.CuratorOp;
+import org.apache.fluss.shaded.curator5.org.apache.curator.utils.ZKPaths;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.CreateMode;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.data.Stat;
@@ -469,6 +471,41 @@ public class ZooKeeperClient implements AutoCloseable {
     }
 
     /** Get the partition assignment in ZK. */
+    /**
+     * Returns the ids of all tablet servers that hold a replica of a table or partition, whether
+     * they are online or not.
+     */
+    public Set<Integer> getTabletServersWithReplicas() throws Exception {
+        Set<Integer> servers = new HashSet<>();
+        List<Long> tableIds = childIds(ZkData.TableIdsZNode.path());
+        for (TableAssignment assignment : getTablesAssignments(tableIds).values()) {
+            addReplicaServers(assignment, servers);
+        }
+        List<Long> partitionIds = childIds(ZkData.PartitionIdsZNode.path());
+        for (PartitionAssignment assignment : getPartitionsAssignments(partitionIds).values()) {
+            addReplicaServers(assignment, servers);
+        }
+        return servers;
+    }
+
+    private List<Long> childIds(String path) throws Exception {
+        List<Long> ids = new ArrayList<>();
+        for (String child : getChildren(path)) {
+            try {
+                ids.add(Long.parseLong(child));
+            } catch (NumberFormatException e) {
+                LOG.warn("Ignoring unexpected zk node {} under {}.", child, path);
+            }
+        }
+        return ids;
+    }
+
+    private static void addReplicaServers(TableAssignment assignment, Set<Integer> servers) {
+        for (BucketAssignment bucket : assignment.getBucketAssignments().values()) {
+            servers.addAll(bucket.getReplicas());
+        }
+    }
+
     public Optional<PartitionAssignment> getPartitionAssignment(long partitionId) throws Exception {
         Optional<byte[]> bytes = getOrEmpty(PartitionIdZNode.path(partitionId));
         return bytes.map(PartitionIdZNode::decode);
@@ -1623,6 +1660,121 @@ public class ZooKeeperClient implements AutoCloseable {
             handle.ifPresent(h -> result.add(new TableBucketAndManifest(tb, h)));
         }
         return result;
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Cluster features
+    // --------------------------------------------------------------------------------------------
+
+    /**
+     * Reads the finalized cluster feature levels, a map of feature name to level, together with the
+     * ZK version of their znode. It is empty if the znode does not exist yet, which is the case
+     * until the first coordinator of a release with cluster features took leadership.
+     */
+    public Optional<VersionedData<Map<String, Integer>>> getClusterFeatureLevels()
+            throws Exception {
+        Stat stat = new Stat();
+        try {
+            byte[] data =
+                    zkClient.getData()
+                            .storingStatIn(stat)
+                            .forPath(ZkData.ClusterFeaturesZNode.path());
+            return Optional.of(
+                    new VersionedData<>(
+                            ZkData.ClusterFeaturesZNode.decode(data), stat.getVersion()));
+        } catch (KeeperException.NoNodeException e) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Creates the znode of the finalized cluster feature levels. The create is fenced on the
+     * coordinator epoch znode ({@link ZkVersion#MATCH_ANY_VERSION} skips the fence), so a deposed
+     * coordinator fails with {@link KeeperException.BadVersionException}. It fails with {@link
+     * KeeperException.NodeExistsException} if the znode exists.
+     */
+    public void createClusterFeatureLevels(
+            Map<String, Integer> levels, int expectedCoordinatorEpochZkVersion) throws Exception {
+        String path = ZkData.ClusterFeaturesZNode.path();
+        zkClient.createContainers(ZKPaths.getPathAndNode(path).getPath());
+        List<CuratorOp> ops =
+                Collections.singletonList(
+                        zkClient.transactionOp()
+                                .create()
+                                .withMode(CreateMode.PERSISTENT)
+                                .forPath(path, ZkData.ClusterFeaturesZNode.encode(levels)));
+        zkClient.transaction()
+                .forOperations(wrapRequestsWithEpochCheck(ops, expectedCoordinatorEpochZkVersion));
+        LOG.info("Created the finalized cluster feature levels {} in ZooKeeper.", levels);
+    }
+
+    /**
+     * Replaces the finalized cluster feature levels. The write is conditional on the ZK version the
+     * levels were read with, so it fails if they changed since, and fenced on the coordinator epoch
+     * znode, so it fails for a deposed coordinator. Both failures are a {@link
+     * KeeperException.BadVersionException}.
+     */
+    public void updateClusterFeatureLevels(
+            Map<String, Integer> levels,
+            int expectedZkVersion,
+            int expectedCoordinatorEpochZkVersion)
+            throws Exception {
+        List<CuratorOp> ops =
+                Collections.singletonList(
+                        zkClient.transactionOp()
+                                .setData()
+                                .withVersion(expectedZkVersion)
+                                .forPath(
+                                        ZkData.ClusterFeaturesZNode.path(),
+                                        ZkData.ClusterFeaturesZNode.encode(levels)));
+        zkClient.transaction()
+                .forOperations(wrapRequestsWithEpochCheck(ops, expectedCoordinatorEpochZkVersion));
+        LOG.info("Updated the finalized cluster feature levels to {} in ZooKeeper.", levels);
+    }
+
+    /**
+     * Reports the cluster feature levels this tablet server has applied, in an ephemeral znode of
+     * this session. A znode left by an earlier session of the same server, which disappears when
+     * that session expires, is replaced.
+     */
+    public void reportAppliedClusterFeatures(int tabletServerId, AppliedClusterFeatures applied)
+            throws Exception {
+        String path = ZkData.TabletServerFeatureProgressZNode.path(tabletServerId);
+        byte[] data = applied.toJsonBytes();
+        long sessionId = zkClient.getZookeeperClient().getZooKeeper().getSessionId();
+        Stat stat = zkClient.checkExists().forPath(path);
+        if (stat != null && stat.getEphemeralOwner() == sessionId) {
+            zkClient.setData().forPath(path, data);
+            return;
+        }
+        if (stat != null) {
+            try {
+                zkClient.delete().forPath(path);
+            } catch (KeeperException.NoNodeException ignored) {
+                // the earlier session already expired
+            }
+        }
+        zkClient.create()
+                .creatingParentContainersIfNeeded()
+                .withMode(CreateMode.EPHEMERAL)
+                .forPath(path, data);
+    }
+
+    /**
+     * Reads the cluster feature levels the given tablet servers have applied. Servers that have not
+     * reported any, for example because they run a version without cluster features, are left out.
+     */
+    public Map<Integer, AppliedClusterFeatures> getAppliedClusterFeatures(int[] tabletServerIds)
+            throws Exception {
+        Map<Integer, AppliedClusterFeatures> applied = new HashMap<>();
+        for (int tabletServerId : tabletServerIds) {
+            Optional<byte[]> data =
+                    getOrEmpty(ZkData.TabletServerFeatureProgressZNode.path(tabletServerId));
+            if (data.isPresent() && data.get().length > 0) {
+                applied.put(tabletServerId, AppliedClusterFeatures.fromJsonBytes(data.get()));
+            }
+        }
+        return applied;
     }
 
     /**

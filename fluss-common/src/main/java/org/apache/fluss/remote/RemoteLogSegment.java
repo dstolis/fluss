@@ -35,6 +35,10 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
  */
 @Internal
 public class RemoteLogSegment {
+
+    /** The batch magic of segments uploaded by versions that did not record it. */
+    public static final byte UNKNOWN_BATCH_MAGIC = -1;
+
     private final PhysicalTablePath physicalTablePath;
 
     private final TableBucket tableBucket;
@@ -59,6 +63,13 @@ public class RemoteLogSegment {
 
     private final int segmentSizeInBytes;
 
+    /**
+     * The highest magic of the log record batches in the segment, or {@link #UNKNOWN_BATCH_MAGIC}
+     * for segments uploaded by versions that did not record it. Those versions could not write
+     * batches of magic V3, so their segments only hold older formats.
+     */
+    private final byte maxBatchMagic;
+
     private RemoteLogSegment(
             PhysicalTablePath physicalTablePath,
             TableBucket tableBucket,
@@ -68,7 +79,8 @@ public class RemoteLogSegment {
             @Nullable Long logicalStartOffset,
             @Nullable Long logicalEndOffset,
             long maxTimestamp,
-            int segmentSizeInBytes) {
+            int segmentSizeInBytes,
+            byte maxBatchMagic) {
         this.physicalTablePath = checkNotNull(physicalTablePath);
         this.tableBucket = checkNotNull(tableBucket);
         this.remoteLogSegmentId = checkNotNull(remoteLogSegmentId);
@@ -107,6 +119,7 @@ public class RemoteLogSegment {
         }
         this.maxTimestamp = maxTimestamp;
         this.segmentSizeInBytes = segmentSizeInBytes;
+        this.maxBatchMagic = maxBatchMagic;
     }
 
     public PhysicalTablePath physicalTablePath() {
@@ -161,7 +174,8 @@ public class RemoteLogSegment {
                 logicalStartOffset,
                 logicalEndOffset,
                 maxTimestamp,
-                segmentSizeInBytes);
+                segmentSizeInBytes,
+                maxBatchMagic);
     }
 
     public long maxTimestamp() {
@@ -172,6 +186,15 @@ public class RemoteLogSegment {
         return segmentSizeInBytes;
     }
 
+    /**
+     * The highest magic of the log record batches in the segment, or {@link #UNKNOWN_BATCH_MAGIC}
+     * if the version that uploaded it did not record it.
+     */
+    public byte maxBatchMagic() {
+        return maxBatchMagic;
+    }
+
+    // maxBatchMagic is derived from the segment's data, so it is left out of the identity
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -227,6 +250,8 @@ public class RemoteLogSegment {
                 + maxTimestamp
                 + ", segmentSizeInBytes="
                 + segmentSizeInBytes
+                + ", maxBatchMagic="
+                + maxBatchMagic
                 + '}';
     }
 
@@ -241,6 +266,7 @@ public class RemoteLogSegment {
         private @Nullable Long logicalEndOffset;
         private long maxTimestamp;
         private int segmentSizeInBytes;
+        private byte maxBatchMagic = UNKNOWN_BATCH_MAGIC;
 
         public static Builder builder() {
             return new Builder();
@@ -286,6 +312,11 @@ public class RemoteLogSegment {
             return this;
         }
 
+        public Builder maxBatchMagic(byte maxBatchMagic) {
+            this.maxBatchMagic = maxBatchMagic;
+            return this;
+        }
+
         public Builder tableBucket(TableBucket tableBucket) {
             this.tableBucket = tableBucket;
             return this;
@@ -301,7 +332,8 @@ public class RemoteLogSegment {
                     logicalStartOffset,
                     logicalEndOffset,
                     maxTimestamp,
-                    segmentSizeInBytes);
+                    segmentSizeInBytes,
+                    maxBatchMagic);
         }
     }
 }

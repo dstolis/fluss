@@ -18,11 +18,14 @@
 package org.apache.fluss.server.zk.data;
 
 import org.apache.fluss.cluster.Endpoint;
+import org.apache.fluss.rpc.protocol.feature.SupportedLevelRange;
 import org.apache.fluss.server.metadata.TabletServerResource;
 
 import javax.annotation.Nullable;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -35,6 +38,8 @@ public class TabletServerRegistration {
     private final List<Endpoint> endpoints;
     private final long registerTimestamp;
     private final TabletServerResource resource;
+    // the cluster features this server supports, mapped to the range of supported levels
+    private final Map<String, SupportedLevelRange> supportedFeatures;
 
     public TabletServerRegistration(
             @Nullable String rack, List<Endpoint> endpoints, long registerTimestamp) {
@@ -46,10 +51,20 @@ public class TabletServerRegistration {
             List<Endpoint> endpoints,
             long registerTimestamp,
             TabletServerResource resource) {
+        this(rack, endpoints, registerTimestamp, resource, Collections.emptyMap());
+    }
+
+    public TabletServerRegistration(
+            @Nullable String rack,
+            List<Endpoint> endpoints,
+            long registerTimestamp,
+            TabletServerResource resource,
+            Map<String, SupportedLevelRange> supportedFeatures) {
         this.rack = rack;
         this.endpoints = endpoints;
         this.registerTimestamp = registerTimestamp;
         this.resource = resource;
+        this.supportedFeatures = supportedFeatures;
     }
 
     public List<Endpoint> getEndpoints() {
@@ -68,6 +83,14 @@ public class TabletServerRegistration {
         return resource;
     }
 
+    /**
+     * The cluster features this server supports, mapped to the range of supported levels. Empty for
+     * servers that registered before cluster features existed.
+     */
+    public Map<String, SupportedLevelRange> getSupportedFeatures() {
+        return supportedFeatures;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -80,12 +103,13 @@ public class TabletServerRegistration {
         return registerTimestamp == that.registerTimestamp
                 && Objects.equals(endpoints, that.endpoints)
                 && Objects.equals(rack, that.rack)
-                && Objects.equals(resource, that.resource);
+                && Objects.equals(resource, that.resource)
+                && Objects.equals(supportedFeatures, that.supportedFeatures);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(endpoints, registerTimestamp, rack, resource);
+        return Objects.hash(endpoints, registerTimestamp, rack, resource, supportedFeatures);
     }
 
     @Override
@@ -99,6 +123,8 @@ public class TabletServerRegistration {
                 + rack
                 + "', resource="
                 + resource
+                + ", supportedFeatures="
+                + supportedFeatures
                 + '}';
     }
 }

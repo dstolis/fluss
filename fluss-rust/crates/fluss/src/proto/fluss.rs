@@ -40,6 +40,10 @@ pub struct ApiVersionsResponse {
     pub api_versions: ::prost::alloc::vec::Vec<PbApiVersion>,
     #[prost(int32, optional, tag = "2")]
     pub server_type: ::core::option::Option<i32>,
+    /// The finalized level of every cluster feature, as applied on this tablet server. Only tablet
+    /// servers report it. A feature that is not reported is at its baseline level.
+    #[prost(message, repeated, tag = "3")]
+    pub finalized_features: ::prost::alloc::vec::Vec<PbClusterFeatureLevel>,
 }
 /// get schema request and response
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -329,6 +333,40 @@ pub struct DescribeClusterResponse {
     /// Live standby coordinators, excluding the active coordinator_server. Fluss versions >= 1.1.
     #[prost(message, repeated, tag = "4")]
     pub coordinator_standbys: ::prost::alloc::vec::Vec<PbServerNode>,
+}
+/// describe and update cluster features request and response
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DescribeClusterFeaturesRequest {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DescribeClusterFeaturesResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub features: ::prost::alloc::vec::Vec<PbClusterFeature>,
+    /// The feature epoch of the finalized levels, which goes up by one with every raise.
+    #[prost(int32, optional, tag = "2")]
+    pub feature_epoch: ::core::option::Option<i32>,
+    /// The levels each registered tablet server has applied, so operators can see which servers
+    /// still lag behind a raise.
+    #[prost(message, repeated, tag = "3")]
+    pub tablet_servers: ::prost::alloc::vec::Vec<PbTabletServerFeatureProgress>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpdateClusterFeaturesRequest {
+    /// The features to raise, with their new finalized level. All of them are raised, or none.
+    #[prost(message, repeated, tag = "1")]
+    pub features: ::prost::alloc::vec::Vec<PbClusterFeatureLevel>,
+    /// If true, the change is validated but not made.
+    #[prost(bool, optional, tag = "2")]
+    pub validate_only: ::core::option::Option<bool>,
+    /// If set, the raise is rejected unless the feature epoch is still this one, so it cannot apply
+    /// on top of a raise the caller did not see.
+    #[prost(int32, optional, tag = "3")]
+    pub expected_feature_epoch: ::core::option::Option<i32>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateClusterFeaturesResponse {
+    /// The feature epoch after the update.
+    #[prost(int32, optional, tag = "1")]
+    pub feature_epoch: ::core::option::Option<i32>,
 }
 /// produce log request and response
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1287,6 +1325,34 @@ pub struct PbApiVersion {
     pub min_version: i32,
     #[prost(int32, required, tag = "3")]
     pub max_version: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PbClusterFeatureLevel {
+    #[prost(string, required, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(int32, required, tag = "2")]
+    pub level: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PbTabletServerFeatureProgress {
+    #[prost(int32, required, tag = "1")]
+    pub tablet_server_id: i32,
+    /// The feature epoch of the levels the server has applied. Absent if the server has not reported
+    /// any, for example because it runs a version without cluster features.
+    #[prost(int32, optional, tag = "2")]
+    pub applied_epoch: ::core::option::Option<i32>,
+    #[prost(message, repeated, tag = "3")]
+    pub applied_levels: ::prost::alloc::vec::Vec<PbClusterFeatureLevel>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PbClusterFeature {
+    #[prost(string, required, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(int32, required, tag = "2")]
+    pub finalized_level: i32,
+    /// The highest level that every registered coordinator and tablet server supports.
+    #[prost(int32, required, tag = "3")]
+    pub supported_level: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PbTablePath {

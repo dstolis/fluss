@@ -23,6 +23,9 @@ import org.apache.fluss.rpc.messages.ApiVersionsResponse;
 import org.apache.fluss.rpc.messages.PbApiVersion;
 import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.ApiManager;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
+
+import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -36,8 +39,15 @@ public class TestingGatewayService extends RpcGatewayService {
     private final List<String> processorThreadNames =
             Collections.synchronizedList(new ArrayList<>());
 
+    /** The finalized cluster feature levels this server reports, none if null. */
+    @Nullable private volatile ClusterFeatureLevels finalizedFeatureLevels;
+
     public List<String> getProcessorThreadNames() {
         return new ArrayList<>(processorThreadNames);
+    }
+
+    public void setFinalizedFeatureLevels(@Nullable ClusterFeatureLevels finalizedFeatureLevels) {
+        this.finalizedFeatureLevels = finalizedFeatureLevels;
     }
 
     @Override
@@ -55,6 +65,10 @@ public class TestingGatewayService extends RpcGatewayService {
         ApiVersionsResponse response = new ApiVersionsResponse();
         response.addAllApiVersions(apiVersions);
         response.setServerType(providerType().toTypeId());
+        ClusterFeatureLevels levels = finalizedFeatureLevels;
+        if (levels != null) {
+            levels.reportIn(response);
+        }
         processorThreadNames.add(Thread.currentThread().getName());
         return CompletableFuture.completedFuture(response);
     }

@@ -28,6 +28,7 @@ import org.apache.fluss.remote.RemoteLogSegment;
 import org.apache.fluss.utils.types.Tuple2;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.NumberFormat;
@@ -543,6 +544,22 @@ public class FlussPaths {
      */
     public static FsPath remoteLogSegmentDir(FsPath remoteLogTabletDir, UUID remoteLogSegmentId) {
         return new FsPath(remoteLogTabletDir, remoteLogSegmentId.toString());
+    }
+
+    /**
+     * Returns the id of the copy of a remote log segment that a tablet server writes for clients
+     * that can't read every batch format of the segment. The copy lives in a directory named by
+     * this id inside the segment's directory, and its log file has the same name as the segment's:
+     *
+     * <pre>
+     * {remote_log_segment_dir}/{copy_id}/{remote_log_start_offset}.log
+     * </pre>
+     *
+     * @param remoteLogSegmentId the UUID of the remote log segment the copy belongs to
+     */
+    public static UUID remoteLogSegmentCopyId(UUID remoteLogSegmentId) {
+        return UUID.nameUUIDFromBytes(
+                ("compat-v0-copy-" + remoteLogSegmentId).getBytes(StandardCharsets.UTF_8));
     }
 
     /** Returns the remote directory path for storing log segment files (log and index files). */

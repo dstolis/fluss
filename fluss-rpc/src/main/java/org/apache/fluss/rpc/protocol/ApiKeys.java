@@ -43,8 +43,11 @@ public enum ApiKeys {
     GET_METADATA(1012, 0, 0, PUBLIC),
     UPDATE_METADATA(1013, 0, 0, PRIVATE),
     // Version 1: Supports original_partition_name in requests and responses for historical writes.
-    PRODUCE_LOG(1014, 0, 1, PUBLIC),
-    FETCH_LOG(1015, 0, 0, PUBLIC),
+    // Version 2: The request may carry log record batches of magic V3. Tablet servers advertise it
+    // only once they have applied level 3 of the cluster feature log.record-batch.version.
+    PRODUCE_LOG(1014, 0, 2, PUBLIC),
+    // Version 1: The client can read log record batches of magic V3.
+    FETCH_LOG(1015, 0, 1, PUBLIC),
 
     // Version 0: Uses lake's encoder for primary key encoding (legacy behavior).
     // Version 1: Uses CompactedKeyEncoder for primary key encoding when bucket key differs from
@@ -75,7 +78,8 @@ public enum ApiKeys {
     COMMIT_LAKE_TABLE_SNAPSHOT(1030, 0, 0, PRIVATE),
     NOTIFY_LAKE_TABLE_OFFSET(1031, 0, 0, PRIVATE),
     GET_LAKE_SNAPSHOT(1032, 0, 0, PUBLIC),
-    LIMIT_SCAN(1033, 0, 0, PUBLIC),
+    // Version 1: The client can read log record batches of magic V3 returned for log tables.
+    LIMIT_SCAN(1033, 0, 1, PUBLIC),
 
     // Version 0: Uses lake's encoder for prefix key encoding (legacy behavior).
     // Version 1: Uses CompactedKeyEncoder for prefix key encoding when bucket key differs from
@@ -125,7 +129,9 @@ public enum ApiKeys {
     LIST_CONSUMER_GROUPS(1072, 0, 0, PUBLIC),
     DELETE_CONSUMER_GROUPS(1073, 0, 0, PUBLIC),
     CREATE_TABLE_FROM_LAKE(1074, 0, 0, PUBLIC),
-    DESCRIBE_CLUSTER(1075, 0, 0, PUBLIC);
+    DESCRIBE_CLUSTER(1075, 0, 0, PUBLIC),
+    DESCRIBE_CLUSTER_FEATURES(1076, 0, 0, PUBLIC),
+    UPDATE_CLUSTER_FEATURES(1077, 0, 0, PUBLIC);
 
     private static final Map<Integer, ApiKeys> ID_TO_TYPE =
             Arrays.stream(ApiKeys.values())

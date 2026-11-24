@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Collections;
 
 import static org.apache.fluss.compression.ArrowCompressionInfo.DEFAULT_COMPRESSION;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
 /** Tests for {@link org.apache.fluss.server.log.FetchParams}. */
@@ -114,5 +115,19 @@ class FetchParamsTest {
     void testBuilderWithoutFilterInfo() {
         FetchParams fetchParams = new FetchParamsBuilder(-1, 100).build();
         assertThat(fetchParams.getFilterInfo(1L)).isNull();
+    }
+
+    @Test
+    void testReaderIsComparedWithTheLevelAppliedAtReadTime() {
+        FetchParams fetchParams = new FetchParamsBuilder(-1, 100).build();
+        // without a reader level, for example for internal reads, nothing is converted
+        assertThat(fetchParams.readerIsBelow(3)).isFalse();
+
+        // a reader of batches up to V2 reads every batch as stored at level 2, and the same
+        // fetch, read again from the purgatory after a raise, gets converted batches
+        fetchParams.setReaderMaxBatchMagic(LOG_MAGIC_VALUE_V2);
+        assertThat(fetchParams.readerIsBelow(2)).isFalse();
+        assertThat(fetchParams.readerIsBelow(3)).isTrue();
+        assertThat(fetchParams.readerMaxBatchMagic()).isEqualTo(LOG_MAGIC_VALUE_V2);
     }
 }

@@ -40,6 +40,9 @@ import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.ApiManager;
 import org.apache.fluss.rpc.protocol.ApiMethod;
 import org.apache.fluss.rpc.protocol.MessageCodec;
+import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.auth.ClientAuthenticator;
 import org.apache.fluss.shaded.netty4.io.netty.bootstrap.Bootstrap;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
@@ -102,9 +105,16 @@ final class ServerConnection {
     @GuardedBy("lock")
     private ConnectionState state;
 
-    /** The api versions supported by the remote server. */
-    @GuardedBy("lock")
-    private ServerApiVersions serverApiVersions;
+    /**
+     * The api versions supported by the remote server. Written under {@code lock}, but volatile so
+     * that {@link #negotiatedVersion} can read it without the lock: writers call it while holding
+     * their own locks, and {@link #close} completes request futures, whose callbacks take those
+     * locks, while holding {@code lock}.
+     */
+    private volatile ServerApiVersions serverApiVersions;
+
+    /** The finalized cluster feature levels the remote server reported with its api versions. */
+    private volatile ClusterFeatureLevels finalizedFeatureLevels = ClusterFeatureLevels.baseline();
 
     @GuardedBy("lock")
     private int retryAuthCount = 0;
@@ -139,6 +149,72 @@ final class ServerConnection {
         synchronized (lock) {
             return state == ConnectionState.READY && channel != null && channel.isActive();
         }
+    }
+
+    /**
+     * Returns the finalized level of the given cluster feature that the server reported with its
+     * API versions, or the baseline level of the feature if it reported none. The server reports
+     * the level in two ways: in the finalized features of the response, and by advertising the
+     * versions of the write APIs that carry the level. The higher of the two counts.
+     */
+    public int finalizedFeatureLevel(ClusterFeature feature) {
+        return Math.max(
+                finalizedFeatureLevels.level(feature),
+                ApiFeatureContracts.levelImpliedByWriteVersions(feature, this::negotiatedVersion));
+    }
+
+    /**
+     * Returns the version of the API this connection uses, or -1 if the API versions were not
+     * negotiated yet or the server does not support the API.
+     */
+    public short negotiatedVersion(ApiKeys apiKey) {
+        // never take the lock here, see serverApiVersions
+        ServerApiVersions versions = serverApiVersions;
+        if (versions == null) {
+            return -1;
+        }
+        try {
+            return versions.highestAvailableVersion(apiKey);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /**
+     * Asks the server for its API versions again on this connection, for example to use a version
+     * the server only advertises once a cluster feature level was raised. Requests in flight are
+     * not affected: each request carries its version in its header.
+     */
+    public CompletableFuture<Void> renegotiateApiVersions() {
+        CompletableFuture<Void> renegotiated = new CompletableFuture<>();
+        send(ApiKeys.API_VERSIONS, newApiVersionsRequest())
+                .whenComplete(
+                        (response, cause) -> {
+                            if (cause == null && response instanceof ApiVersionsResponse) {
+                                ApiVersionsResponse apiVersions = (ApiVersionsResponse) response;
+                                synchronized (lock) {
+                                    serverApiVersions =
+                                            new ServerApiVersions(apiVersions.getApiVersionsList());
+                                    finalizedFeatureLevels =
+                                            ClusterFeatureLevels.fromReported(
+                                                    apiVersions.getFinalizedFeaturesList());
+                                }
+                            } else if (cause != null) {
+                                LOG.debug(
+                                        "Failed to renegotiate the API versions with {}.",
+                                        node,
+                                        cause);
+                            }
+                            renegotiated.complete(null);
+                        });
+        return renegotiated;
+    }
+
+    private static ApiVersionsRequest newApiVersionsRequest() {
+        // TODO: set correct client software name and version, used for metrics in server
+        return new ApiVersionsRequest()
+                .setClientSoftwareName("fluss")
+                .setClientSoftwareVersion("0.1.0");
     }
 
     /** Send an RPC request to the server and return a future for the response. */
@@ -274,12 +350,11 @@ final class ServerConnection {
                         .addLast("handler", new NettyClientHandler(new ResponseCallback()));
                 // start checking api versions
                 switchState(ConnectionState.CHECKING_API_VERSIONS);
-                // TODO: set correct client software name and version, used for metrics in server
-                ApiVersionsRequest request =
-                        new ApiVersionsRequest()
-                                .setClientSoftwareName("fluss")
-                                .setClientSoftwareVersion("0.1.0");
-                doSend(ApiKeys.API_VERSIONS, request, new CompletableFuture<>(), true)
+                doSend(
+                                ApiKeys.API_VERSIONS,
+                                newApiVersionsRequest(),
+                                new CompletableFuture<>(),
+                                true)
                         .whenComplete(this::handleApiVersionsResponse);
             } else {
                 LOG.error("Failed to establish connection to server {}.", node, future.cause());
@@ -462,8 +537,11 @@ final class ServerConnection {
         }
 
         synchronized (lock) {
-            serverApiVersions =
-                    new ServerApiVersions(((ApiVersionsResponse) response).getApiVersionsList());
+            ApiVersionsResponse apiVersionsResponse = (ApiVersionsResponse) response;
+            serverApiVersions = new ServerApiVersions(apiVersionsResponse.getApiVersionsList());
+            finalizedFeatureLevels =
+                    ClusterFeatureLevels.fromReported(
+                            apiVersionsResponse.getFinalizedFeaturesList());
             // send initial token
             sendInitialToken();
         }

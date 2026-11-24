@@ -656,6 +656,7 @@ mod tests {
                 max_version: 0,
             }],
             server_type: Some(server_type.to_type_id()),
+            ..Default::default()
         }
         .encode(&mut reply)
         .unwrap();

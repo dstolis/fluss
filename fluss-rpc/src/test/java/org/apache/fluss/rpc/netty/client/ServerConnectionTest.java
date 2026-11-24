@@ -53,6 +53,8 @@ import org.apache.fluss.rpc.netty.client.ServerConnection.ConnectionState;
 import org.apache.fluss.rpc.netty.server.NettyServer;
 import org.apache.fluss.rpc.netty.server.RequestsMetrics;
 import org.apache.fluss.rpc.protocol.ApiKeys;
+import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.auth.AuthenticationFactory;
 import org.apache.fluss.security.auth.ClientAuthenticator;
 import org.apache.fluss.shaded.netty4.io.netty.bootstrap.Bootstrap;
@@ -86,6 +88,7 @@ import static org.apache.fluss.metrics.MetricNames.CLIENT_RESPONSES_RATE_AVG;
 import static org.apache.fluss.metrics.MetricNames.CLIENT_RESPONSES_RATE_TOTAL;
 import static org.apache.fluss.rpc.netty.NettyUtils.getClientSocketChannelClass;
 import static org.apache.fluss.rpc.netty.NettyUtils.newEventLoopGroup;
+import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
 import static org.apache.fluss.utils.NetUtils.getAvailablePort;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -368,6 +371,107 @@ public class ServerConnectionTest {
         }
     }
 
+    @Test
+    void testNegotiatedVersionDoesNotWaitForAClosingConnection() throws Exception {
+        ServerConnection connection =
+                new ServerConnection(
+                        bootstrap,
+                        serverNode,
+                        TestingClientMetricGroup.newInstance(),
+                        clientAuthenticator,
+                        (con, ignore) -> {});
+        GetTableSchemaRequest request =
+                new GetTableSchemaRequest()
+                        .setTablePath(
+                                new PbTablePath().setDatabaseName("test").setTableName("test"))
+                        .setSchemaId(0);
+
+        // the request is still pending while the connection is being established, so close()
+        // completes it. It does so while it holds the connection lock, and a writer
+        // callback may then wait for a thread that reads the negotiated versions, as the
+        // RecordAccumulator does through its deque lock
+        CompletableFuture<Boolean> readWhileClosing = new CompletableFuture<>();
+        CompletableFuture<ApiMessage> pending = connection.send(ApiKeys.GET_TABLE_SCHEMA, request);
+        pending.whenComplete(
+                (response, cause) -> {
+                    CountDownLatch read = new CountDownLatch(1);
+                    Thread reader =
+                            new Thread(
+                                    () -> {
+                                        connection.negotiatedVersion(ApiKeys.PRODUCE_LOG);
+                                        connection.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION);
+                                        read.countDown();
+                                    });
+                    reader.start();
+                    try {
+                        readWhileClosing.complete(read.await(10, TimeUnit.SECONDS));
+                    } catch (InterruptedException e) {
+                        readWhileClosing.completeExceptionally(e);
+                    }
+                });
+        connection.close().get();
+        assertThat(readWhileClosing.get()).isTrue();
+    }
+
+    @Test
+    void testRenegotiationPicksUpVersionsAdvertisedAfterARaise() throws Exception {
+        nettyServer.close();
+        RaisableGatewayService raisable = new RaisableGatewayService();
+        buildNettyServer(raisable);
+
+        ServerConnection connection =
+                new ServerConnection(
+                        bootstrap,
+                        serverNode,
+                        TestingClientMetricGroup.newInstance(),
+                        clientAuthenticator,
+                        (con, ignore) -> {});
+        try {
+            assertThat(connection.send(ApiKeys.PRODUCE_LOG, produceLogRequest(null)).get())
+                    .isInstanceOf(ProduceLogResponse.class);
+            // before the raise the server advertises PRODUCE_LOG up to v1 and reports level 2
+            assertThat(connection.negotiatedVersion(ApiKeys.PRODUCE_LOG)).isEqualTo((short) 1);
+            assertThat(connection.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION)).isEqualTo(2);
+
+            // after the raise, the connection keeps the versions it negotiated until it asks again
+            raisable.raised = true;
+            assertThat(connection.negotiatedVersion(ApiKeys.PRODUCE_LOG)).isEqualTo((short) 1);
+            connection.renegotiateApiVersions().get();
+            assertThat(connection.negotiatedVersion(ApiKeys.PRODUCE_LOG)).isEqualTo((short) 2);
+            assertThat(connection.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
+            assertThat(connection.send(ApiKeys.PRODUCE_LOG, produceLogRequest(null)).get())
+                    .isInstanceOf(ProduceLogResponse.class);
+        } finally {
+            connection.close().get();
+        }
+    }
+
+    @Test
+    void testProduceLogVersion2AloneImpliesTheRaisedLevel() throws Exception {
+        nettyServer.close();
+        RaisableGatewayService raisable = new RaisableGatewayService();
+        raisable.raised = true;
+        // a server that advertises v2 but reports no finalized features, for example one whose
+        // response lost the field, still counts as having finalized level 3
+        raisable.reportFeatures = false;
+        buildNettyServer(raisable);
+
+        ServerConnection connection =
+                new ServerConnection(
+                        bootstrap,
+                        serverNode,
+                        TestingClientMetricGroup.newInstance(),
+                        clientAuthenticator,
+                        (con, ignore) -> {});
+        try {
+            connection.send(ApiKeys.PRODUCE_LOG, produceLogRequest(null)).get();
+            assertThat(connection.negotiatedVersion(ApiKeys.PRODUCE_LOG)).isEqualTo((short) 2);
+            assertThat(connection.finalizedFeatureLevel(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
+        } finally {
+            connection.close().get();
+        }
+    }
+
     private static PutKvRequest putKvRequest(String originalPartitionName) {
         PutKvRequest request = new PutKvRequest().setTableId(1L).setAcks(1).setTimeoutMs(10_000);
         request.addBucketsReq().setBucketId(0).setRecords(new byte[0]);
@@ -412,6 +516,41 @@ public class ServerConnectionTest {
                             metricGroup,
                             RequestsMetrics.createCoordinatorServerRequestMetrics(metricGroup));
             nettyServer.start();
+        }
+    }
+
+    /** A tablet server that advertises PRODUCE_LOG v2 only once the V3 level was raised. */
+    private static class RaisableGatewayService extends TestingTabletGatewayService {
+        private volatile boolean raised;
+        private volatile boolean reportFeatures = true;
+
+        @Override
+        public CompletableFuture<ApiVersionsResponse> apiVersions(ApiVersionsRequest request) {
+            return super.apiVersions(request)
+                    .thenApply(
+                            response -> {
+                                ClusterFeatureLevels levels =
+                                        raised
+                                                ? ClusterFeatureLevels.latest()
+                                                : ClusterFeatureLevels.baseline();
+                                for (PbApiVersion apiVersion : response.getApiVersionsList()) {
+                                    ApiKeys api = ApiKeys.forId(apiVersion.getApiKey());
+                                    apiVersion.setMaxVersion(
+                                            Math.min(
+                                                    apiVersion.getMaxVersion(),
+                                                    ApiFeatureContracts.highestAdvertisedVersion(
+                                                            api, levels)));
+                                }
+                                if (reportFeatures) {
+                                    levels.reportIn(response);
+                                }
+                                return response;
+                            });
+        }
+
+        @Override
+        public CompletableFuture<ProduceLogResponse> produceLog(ProduceLogRequest request) {
+            return CompletableFuture.completedFuture(new ProduceLogResponse());
         }
     }
 
