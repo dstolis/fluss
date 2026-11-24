@@ -39,6 +39,7 @@ import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -234,9 +235,8 @@ public class IdempotenceManager {
      * <p>A bucket is only restarted once every request carrying one of its batches has been
      * answered. Batches the server rejected were not written and are resent. A batch whose request
      * got no answer, for example on a timeout, may have been written, so it is never renumbered:
-     * the restart of its bucket is cancelled, the batch is retried as it is, and if the server
-     * reports a gap for it, the batch fails and the writer id is reset, as for other unknown
-     * outcomes.
+     * the restart of its bucket is cancelled and the writer id is reset, so the batches of the
+     * bucket fail, as for other unknown outcomes.
      */
     void maybeRestartSequences(Set<PhysicalTablePath> tablePaths) throws Throwable {
         List<TableBucket> ready;
@@ -277,16 +277,18 @@ public class IdempotenceManager {
                 continue;
             }
             if (entry.hasBatchWithUnknownOutcome()) {
-                // A batch of the bucket may have been written, so it must not be renumbered.
-                // Cancel the restart: the batch is retried as it is, and if the server reports a
-                // gap for it, it fails and the writer id is reset.
-                LOG.info(
+                // A batch of the bucket may have been written, so the bucket must not be
+                // renumbered, and the batch that asked for the restart can't be resent as it is
+                // either: the server would report the same gap again, forever. No guarantee can be
+                // made for the bucket, so fail its batches and reset the writer id, as for a gap
+                // reported for a batch with an unknown outcome.
+                LOG.warn(
                         "Not restarting the sequence of table-bucket {} of writer {}, one of its "
-                                + "batches may have been written.",
+                                + "batches may have been written. Resetting the writer id.",
                         tableBucket,
                         writerId);
-                buckets.remove();
-                continue;
+                resetWriterId();
+                return Collections.emptyList();
             }
             ready.add(tableBucket);
         }

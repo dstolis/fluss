@@ -24,6 +24,8 @@ import org.apache.fluss.kafka.backend.produce.KafkaProduceBackend;
 import org.apache.fluss.kafka.dispatcher.KafkaApiHandler;
 import org.apache.fluss.kafka.dispatcher.KafkaApiSpec;
 import org.apache.fluss.kafka.error.KafkaErrorMapper;
+import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
+import org.apache.fluss.utils.ExceptionUtils;
 
 import org.apache.kafka.common.errors.ApiException;
 import org.apache.kafka.common.message.InitProducerIdResponseData;
@@ -102,6 +104,12 @@ public final class InitProducerIdHandler implements KafkaApiHandler<InitProducer
         if (cause instanceof AuthorizationException) {
             // Kafka reports a producer that may not write idempotently at the cluster level
             return Errors.CLUSTER_AUTHORIZATION_FAILED;
+        }
+        if (ExceptionUtils.findThrowable(failure, KeeperException.class).isPresent()) {
+            // The producer id is taken from a counter in ZooKeeper. A ZooKeeper failure is
+            // transient, and the Kafka producer treats an unknown server error here as fatal, so
+            // answer with an error it retries.
+            return Errors.COORDINATOR_LOAD_IN_PROGRESS;
         }
         return KafkaErrorMapper.toKafkaError(
                 org.apache.fluss.rpc.protocol.Errors.forException(cause));

@@ -50,6 +50,7 @@ import org.apache.fluss.server.zk.data.LeaderAndIsr;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.utils.IOUtils;
 
+import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.UnsupportedForMessageFormatException;
 import org.apache.kafka.common.protocol.Errors;
 import org.junit.jupiter.api.AfterEach;
@@ -241,11 +242,12 @@ class GatewayKafkaProduceBackendTest extends KafkaServerTestBase {
         KafkaProduceResult result =
                 backend.write(command((short) 1, topic("topic", idempotent(0, 7L, 0, 0), good(1))))
                         .get(10, TimeUnit.SECONDS);
-        // only the partition of the idempotent producer is rejected, and nothing of it is stored
-        assertErrors(result, Errors.UNSUPPORTED_FOR_MESSAGE_FORMAT, Errors.NONE);
+        // only the partition of the idempotent producer is rejected, with an error the producer
+        // retries, and nothing of it is stored
+        assertErrors(result, Errors.NOT_ENOUGH_REPLICAS, Errors.NONE);
+        assertThat(Errors.NOT_ENOUGH_REPLICAS.exception()).isInstanceOf(RetriableException.class);
         assertThat(result.topics().get(0).partitions().get(0).errorMessage())
-                .contains("log.record-batch.version")
-                .contains("enable.idempotence=false");
+                .contains("log.record-batch.version");
         assertThat(logEndOffset(new TableBucket(42L, 0))).isZero();
         assertThat(logEndOffset(new TableBucket(42L, 1))).isEqualTo(1L);
     }

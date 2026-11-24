@@ -106,14 +106,12 @@ class KafkaIdempotentProduceGateITCase {
                 InitProducerIdResponse init =
                         (InitProducerIdResponse) sendRequest(socket, initRequest());
                 assertThat(init.error()).isEqualTo(Errors.UNSUPPORTED_FOR_MESSAGE_FORMAT);
-                // a producer that skips InitProducerId is stopped at the batch
+                // a producer that skips InitProducerId is stopped at the batch, with an error a
+                // producer retries, since a leader may apply a raise later than other servers
                 PartitionProduceResponse rejected =
                         produce(socket, path, 4711L, 0, 0, records(value(100)));
-                assertThat(rejected.errorCode())
-                        .isEqualTo(Errors.UNSUPPORTED_FOR_MESSAGE_FORMAT.code());
-                assertThat(rejected.errorMessage())
-                        .contains("log.record-batch.version")
-                        .contains("enable.idempotence=false");
+                assertThat(rejected.errorCode()).isEqualTo(Errors.NOT_ENOUGH_REPLICAS.code());
+                assertThat(rejected.errorMessage()).contains("log.record-batch.version");
             }
 
             // a Kafka producer with its default settings is idempotent and fails at once

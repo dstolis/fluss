@@ -50,6 +50,8 @@ import org.apache.fluss.utils.concurrent.FutureUtils;
 import org.apache.kafka.common.errors.InvalidTopicException;
 import org.apache.kafka.common.errors.UnsupportedForMessageFormatException;
 import org.apache.kafka.common.protocol.Errors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -72,6 +74,8 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 @Internal
 public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
 
+    private static final Logger LOG = LoggerFactory.getLogger(GatewayKafkaProduceBackend.class);
+
     private static final String IDEMPOTENCE_NOT_ENABLED =
             "Idempotent producers need cluster feature '"
                     + ClusterFeature.LOG_RECORD_BATCH_VERSION.featureName()
@@ -79,6 +83,13 @@ public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
                     + LOG_MAGIC_VALUE_V3
                     + ", which this cluster has not enabled yet. Raise the level, or set "
                     + "enable.idempotence=false in the producer.";
+
+    private static final String IDEMPOTENCE_NOT_APPLIED =
+            "This tablet server has not applied cluster feature '"
+                    + ClusterFeature.LOG_RECORD_BATCH_VERSION.featureName()
+                    + "' at level "
+                    + LOG_MAGIC_VALUE_V3
+                    + " yet, which idempotent producers need.";
 
     private final TabletService service;
     private final TabletServerMetadataCache metadataCache;
@@ -139,12 +150,15 @@ public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
                     try {
                         service.authorizeTable(WRITE, path);
                         if (partition.idempotentBatch() != null && !idempotentProduceEnabled()) {
+                            // The producer got its id from a tablet server that has applied the
+                            // level, so the level was raised and this leader applies it soon:
+                            // answer with an error the producer retries, keeping its sequence.
                             result.complete(
                                     new PartitionResult(
                                             partition.partitionId(),
-                                            Errors.UNSUPPORTED_FOR_MESSAGE_FORMAT,
+                                            Errors.NOT_ENOUGH_REPLICAS,
                                             -1L,
-                                            IDEMPOTENCE_NOT_ENABLED));
+                                            IDEMPOTENCE_NOT_APPLIED));
                             continue;
                         }
                         EncodedRecords converted =
@@ -178,6 +192,13 @@ public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
     public CompletableFuture<Long> initProducerId(
             String listenerName, @Nullable InetAddress clientAddress, FlussPrincipal principal) {
         if (!idempotentProduceEnabled()) {
+            // InitProducerIdResponse has no error message, so the producer only sees the error
+            // code. Log the reason for the operator.
+            LOG.info(
+                    "Rejected InitProducerId from {} on listener {}: {}",
+                    clientAddress,
+                    listenerName,
+                    IDEMPOTENCE_NOT_ENABLED);
             return FutureUtils.completedExceptionally(
                     new UnsupportedForMessageFormatException(IDEMPOTENCE_NOT_ENABLED));
         }

@@ -18,6 +18,7 @@
 package org.apache.fluss.kafka.api.producer;
 
 import org.apache.fluss.exception.AuthorizationException;
+import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.kafka.KafkaRequest;
 import org.apache.fluss.kafka.KafkaRequestContext;
 import org.apache.fluss.kafka.TestingChannelHandlerContext;
@@ -28,8 +29,10 @@ import org.apache.fluss.kafka.security.KafkaSaslConnection;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.Unpooled;
+import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.utils.concurrent.FutureUtils;
 
+import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.UnsupportedForMessageFormatException;
 import org.apache.kafka.common.message.InitProducerIdRequestData;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -109,6 +112,21 @@ class InitProducerIdHandlerTest {
                                         })
                                 .error())
                 .isEqualTo(Errors.CLUSTER_AUTHORIZATION_FAILED);
+    }
+
+    @Test
+    void testZooKeeperFailureIsReportedAsRetriable() {
+        InitProducerIdResponse response =
+                handle(
+                        request(null),
+                        () -> {
+                            throw new FlussRuntimeException(
+                                    "Fail to get writer id from zookeeper",
+                                    new KeeperException.ConnectionLossException());
+                        });
+
+        assertThat(response.error()).isEqualTo(Errors.COORDINATOR_LOAD_IN_PROGRESS);
+        assertThat(response.error().exception()).isInstanceOf(RetriableException.class);
     }
 
     @Test

@@ -313,6 +313,53 @@ final class SenderWriterEpochTest {
         assertThat(idempotenceManager.writerEpoch()).isEqualTo((short) 0);
     }
 
+    /**
+     * A gap reported for a batch that was not written asks to renumber its bucket, but a later
+     * batch of the bucket has an unknown outcome, so the bucket can't be renumbered. The writer id
+     * is reset and the batches fail, instead of the first batch being resent with the same sequence
+     * forever.
+     */
+    @Test
+    void testRestartBlockedByUnknownOutcomeResetsWriterId() throws Exception {
+        metadataUpdater.setFinalizedFeatureLevel(LOG_RECORD_BATCH_VERSION, 3);
+        IdempotenceManager idempotenceManager = createIdempotenceManager(true);
+        Sender sender1 = setupWithIdempotenceState(idempotenceManager);
+        sender1.runOnce();
+        long writerId = idempotenceManager.writerId();
+
+        CompletableFuture<Exception> future0 = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> future0.complete(e));
+        sender1.runOnce();
+        CompletableFuture<Exception> future1 = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(2, "b"), (tb, leo, e) -> future1.complete(e));
+        sender1.runOnce();
+        assertThat(pendingRequestSize(tb1)).isEqualTo(2);
+
+        // the request of batch 1 times out, then batch 0 is rejected for a gap
+        failRequest(tb1, 1, new TimeoutException("request timed out"));
+        finishIdempotentProduceLogRequest(
+                0, tb1, 0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+        sender1.runOnce();
+        assertThat(idempotenceManager.writerId()).isNotEqualTo(writerId);
+
+        // the server keeps reporting the gap for whatever is resent under the old writer id
+        for (int i = 0; i < 10 && !(future0.isDone() && future1.isDone()); i++) {
+            sender1.runOnce();
+            while (pendingRequestSize(tb1) > 0) {
+                TestTabletServerGateway gateway =
+                        (TestTabletServerGateway)
+                                metadataUpdater.newTabletServerClientForNode(
+                                        metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb1));
+                gateway.response(
+                        0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+            }
+        }
+        assertThat(future0).isDone();
+        assertThat(future1).isDone();
+        assertThat(future0.get()).isNotNull();
+        assertThat(future1.get()).isNotNull();
+    }
+
     /** Without V3, batches carry no epoch, so a real gap still fails the batch and resets. */
     @Test
     void testOutOfOrderSequenceResetsWriterWithoutV3() throws Exception {
