@@ -36,7 +36,6 @@ import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
-import org.apache.fluss.rpc.messages.InitWriterRequest;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
 import org.apache.fluss.rpc.netty.server.Session;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
@@ -205,8 +204,7 @@ public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
         try {
             service.setCurrentSession(
                     new Session((short) 0, listenerName, false, clientAddress, principal));
-            return service.initWriter(new InitWriterRequest())
-                    .thenApply(InitWriterResponse::getWriterId);
+            return service.initWriterForAnyTable().thenApply(InitWriterResponse::getWriterId);
         } catch (Exception failure) {
             return FutureUtils.completedExceptionally(failure);
         }

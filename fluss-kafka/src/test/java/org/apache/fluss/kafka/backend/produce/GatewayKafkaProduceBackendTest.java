@@ -63,9 +63,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -275,6 +277,50 @@ class GatewayKafkaProduceBackendTest extends KafkaServerTestBase {
         assertThat(write(backend, idempotent(0, producerId, 0, 3, 1)).error())
                 .isEqualTo(Errors.INVALID_PRODUCER_EPOCH);
         assertThat(logEndOffset(bucket)).isEqualTo(4L);
+    }
+
+    @Test
+    void testInitProducerIdNeedsWritePermissionOnAnyTable() throws Exception {
+        createTable("topic", 42L, Collections.singletonList(TABLET_SERVER_ID));
+        createTable("other", 43L, Collections.singletonList(TABLET_SERVER_ID));
+        allowRecordBatchV3();
+        Set<Resource> writable = new HashSet<>();
+        DefaultAuthorizer authorizer = authorizerAllowingWritesOn(writable);
+        GatewayKafkaProduceBackend backend =
+                new GatewayKafkaProduceBackend(createTabletService(authorizer), mapper());
+        backends.add(backend);
+        try {
+            assertThatThrownBy(() -> initProducerId(backend))
+                    .hasCauseInstanceOf(AuthorizationException.class)
+                    .hasMessageContaining("WRITE permission on any table");
+
+            // like Kafka, a producer may write to any of its tables, so one of them is enough
+            writable.add(Resource.table(TablePath.of("kafka", "other")));
+            assertThat(initProducerId(backend)).isNotNegative();
+        } finally {
+            authorizer.close();
+        }
+    }
+
+    private DefaultAuthorizer authorizerAllowingWritesOn(Set<Resource> writable) {
+        return new DefaultAuthorizer(
+                new AuthorizationPlugin.Context() {
+                    @Override
+                    public Configuration getConfiguration() {
+                        return conf;
+                    }
+
+                    @Override
+                    public Optional<ZooKeeperClient> getZooKeeperClient() {
+                        return Optional.of(zkClient);
+                    }
+                }) {
+            @Override
+            public boolean isAuthorized(
+                    Session session, OperationType operation, Resource resource) {
+                return operation == OperationType.WRITE && writable.contains(resource);
+            }
+        };
     }
 
     private static long initProducerId(GatewayKafkaProduceBackend backend) throws Exception {

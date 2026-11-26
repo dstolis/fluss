@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.exception.ApiException;
 import org.apache.fluss.exception.AuthorizationException;
+import org.apache.fluss.exception.DatabaseNotExistException;
 import org.apache.fluss.exception.InvalidScanRequestException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.NotLeaderOrFollowerException;
@@ -860,6 +861,41 @@ public final class TabletService extends RpcServiceBase
         CompletableFuture<InitWriterResponse> response = new CompletableFuture<>();
         response.complete(makeInitWriterResponse(metadataManager.initWriterId()));
         return response;
+    }
+
+    /**
+     * Gives out a writer id to a writer that doesn't name its tables up front, such as a Kafka
+     * producer asking for a producer id. Like Kafka, it requires WRITE permission on at least one
+     * table when an authorizer is configured.
+     */
+    public CompletableFuture<InitWriterResponse> initWriterForAnyTable() {
+        if (authorizer != null && !canWriteAnyTable()) {
+            throw new AuthorizationException(
+                    String.format(
+                            "Principal %s has no WRITE permission on any table.",
+                            currentSession().getPrincipal()));
+        }
+        return CompletableFuture.completedFuture(
+                makeInitWriterResponse(metadataManager.initWriterId()));
+    }
+
+    private boolean canWriteAnyTable() {
+        for (String database : metadataManager.listDatabases()) {
+            List<String> tables;
+            try {
+                tables = metadataManager.listTables(database);
+            } catch (DatabaseNotExistException e) {
+                // dropped since it was listed
+                continue;
+            }
+            for (String table : tables) {
+                if (authorizer.isAuthorized(
+                        currentSession(), WRITE, Resource.table(database, table))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     @Override
