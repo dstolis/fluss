@@ -118,10 +118,6 @@ public class IdempotenceManager {
         return idempotenceEnabled;
     }
 
-    boolean hasWriterId(long writerId) {
-        return this.writerId == writerId;
-    }
-
     long writerId() {
         return writerId;
     }
@@ -132,6 +128,7 @@ public class IdempotenceManager {
         this.writerEpoch = NO_WRITER_EPOCH;
     }
 
+    @VisibleForTesting
     short writerEpoch() {
         return writerEpoch;
     }
@@ -478,16 +475,16 @@ public class IdempotenceManager {
                     batch.writerId(),
                     batch.writerEpoch(),
                     batch.batchSequence());
-            if (batch.isOutcomeUnknown() || !restartsSequenceOnGap(batch)) {
-                // An earlier attempt of this batch may have been written, or the sequence of the
-                // bucket can't be restarted, so no guarantee can be made about the batches behind
-                // it. Discard the writer id and the sequences of all buckets.
-                resetWriterId();
-            } else {
+            if (canRestartSequenceAfterGap(batch)) {
                 // The batch was not written. Restart the sequence of the bucket, so the batches
                 // behind it are not rejected for the gap it leaves.
                 removeInFlightBatch(readyWriteBatch);
                 requestSequenceRestart(tableBucket, batch.hasWriterEpoch());
+            } else {
+                // An earlier attempt of this batch may have been written, or the sequence of the
+                // bucket can't be restarted, so no guarantee can be made about the batches behind
+                // it. Discard the writer id and the sequences of all buckets.
+                resetWriterId();
             }
         } else {
             removeInFlightBatch(readyWriteBatch);
@@ -501,10 +498,12 @@ public class IdempotenceManager {
      * Whether a gap reported for the batch restarts the sequence of its bucket instead of failing
      * the batch. A batch with a writer epoch restarts under a bumped epoch. A batch without one,
      * such as a KV batch, restarts under a new writer id, but only once the cluster allows V3
-     * batches: before that, a gap fails the batch and resets the writer id, as it always did.
+     * batches: before that, a gap fails the batch and resets the writer id, as it always did. A
+     * batch whose earlier attempt may have been written is never renumbered, as that could write it
+     * twice.
      */
-    private boolean restartsSequenceOnGap(WriteBatch batch) {
-        return batch.hasWriterEpoch() || writeRecordBatchV3();
+    private boolean canRestartSequenceAfterGap(WriteBatch batch) {
+        return !batch.isOutcomeUnknown() && (batch.hasWriterEpoch() || writeRecordBatchV3());
     }
 
     /**
@@ -588,15 +587,11 @@ public class IdempotenceManager {
 
         if ((error == Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION
                         || error == Errors.UNKNOWN_WRITER_ID_EXCEPTION)
-                && restartsSequenceOnGap(batch)) {
+                && canRestartSequenceAfterGap(batch)) {
             // A real gap, for example because the server expired the writer state. The server
             // rejected the batch before writing it, so restart the sequence of the bucket and
-            // retry the batch from sequence 0, as the Kafka idempotent producer does. A batch
-            // whose earlier attempt may have been written is not renumbered: it fails and the
-            // writer id is reset.
-            if (batch.isOutcomeUnknown()) {
-                return false;
-            }
+            // retry the batch from sequence 0, as the Kafka idempotent producer does. Otherwise
+            // the batch fails and the writer id is reset.
             requestSequenceRestart(tableBucket, batch.hasWriterEpoch());
             return true;
         }

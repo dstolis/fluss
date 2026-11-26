@@ -74,7 +74,6 @@ import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocatorUtil.createBufferAllocator;
 import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
@@ -616,9 +615,6 @@ public final class RecordAccumulator {
                                                 entry.getKey()),
                                         batch));
                         batch.resetWriterState(NO_WRITER_ID, NO_BATCH_SEQUENCE);
-                        if (batch.hasWriterEpoch()) {
-                            batch.setWriterEpoch(NO_WRITER_EPOCH);
-                        }
                     }
                     batch.rerouteToHistoricalPartition();
                 }
@@ -1314,6 +1310,8 @@ public final class RecordAccumulator {
                         // responses.
                         batch.setWriterState(
                                 writerId, idempotenceManager.nextSequence(tableBucket));
+                        // also overwrites the epoch of a batch whose writer state was reset, for
+                        // example when it was rerouted to the historical partition
                         if (batch.hasWriterEpoch()) {
                             batch.setWriterEpoch(idempotenceManager.writerEpoch(tableBucket));
                         }

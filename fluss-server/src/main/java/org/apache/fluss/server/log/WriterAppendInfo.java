@@ -67,7 +67,6 @@ public class WriterAppendInfo {
             boolean isWriterInBatchExpired,
             boolean isAppendAsLeader,
             SequenceValidation sequenceValidation) {
-        LogOffsetMetadata firstOffsetMetadata = new LogOffsetMetadata(batch.baseLogOffset());
         boolean fromOlderEpoch =
                 maybeBumpEpoch(
                         batch.writerEpoch(),
@@ -89,7 +88,7 @@ public class WriterAppendInfo {
                 batch.batchSequence(),
                 batch.lastSequence(),
                 batch.lastLogOffset(),
-                (int) (batch.lastLogOffset() - firstOffsetMetadata.getMessageOffset()),
+                (int) (batch.lastLogOffset() - batch.baseLogOffset()),
                 batch.commitTimestamp());
     }
 
@@ -123,52 +122,6 @@ public class WriterAppendInfo {
             epochBumped = true;
         }
         return false;
-    }
-
-    public void appendDataBatch(
-            int batchSequence,
-            LogOffsetMetadata firstOffsetMetadata,
-            long lastOffset,
-            boolean isWriterInBatchExpired,
-            boolean isAppendAsLeader,
-            long batchTimestamp) {
-        appendDataBatch(
-                batchSequence,
-                firstOffsetMetadata,
-                lastOffset,
-                isWriterInBatchExpired,
-                isAppendAsLeader,
-                batchTimestamp,
-                SequenceValidation.ENFORCE);
-    }
-
-    private void appendDataBatch(
-            int batchSequence,
-            LogOffsetMetadata firstOffsetMetadata,
-            long lastOffset,
-            boolean isWriterInBatchExpired,
-            boolean isAppendAsLeader,
-            long batchTimestamp,
-            SequenceValidation sequenceValidation) {
-        maybeValidateDataBatch(
-                batchSequence,
-                isWriterInBatchExpired,
-                lastOffset,
-                isAppendAsLeader,
-                sequenceValidation);
-        appendDataBatch(batchSequence, firstOffsetMetadata, lastOffset, batchTimestamp);
-    }
-
-    private void appendDataBatch(
-            int batchSequence,
-            LogOffsetMetadata firstOffsetMetadata,
-            long lastOffset,
-            long batchTimestamp) {
-        updatedEntry.addBath(
-                batchSequence,
-                lastOffset,
-                (int) (lastOffset - firstOffsetMetadata.getMessageOffset()),
-                batchTimestamp);
     }
 
     private void maybeValidateDataBatch(

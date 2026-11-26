@@ -60,7 +60,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makeProduceLogRequest;
@@ -129,8 +128,11 @@ public class Sender implements Runnable {
 
     private final WriterMetricGroup writerMetricGroup;
 
-    /** When the API versions were last renegotiated with each tablet server, by server id. */
-    private final Map<Integer, Long> lastRenegotiationMs = new ConcurrentHashMap<>();
+    /**
+     * When the API versions were last renegotiated with each tablet server, by server id. Only the
+     * sender thread accesses it.
+     */
+    private final Map<Integer, Long> lastRenegotiationMs = new HashMap<>();
 
     public Sender(
             RecordAccumulator accumulator,
@@ -509,7 +511,7 @@ public class Sender implements Runnable {
     private void maybeRenegotiateForV3Batches(int destination, List<ReadyWriteBatch> batches) {
         boolean hasV3Batches = false;
         for (ReadyWriteBatch batch : batches) {
-            if (batch.writeBatch().isLogBatch() && batch.writeBatch().hasWriterEpoch()) {
+            if (batch.writeBatch().hasWriterEpoch()) {
                 hasV3Batches = true;
                 break;
             }

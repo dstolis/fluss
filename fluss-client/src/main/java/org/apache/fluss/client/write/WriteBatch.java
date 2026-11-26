@@ -169,10 +169,6 @@ public abstract class WriteBatch {
 
     public abstract void abortRecordAppends();
 
-    /**
-     * Whether this batch carries a writer epoch in its header, which only log record batches of
-     * magic V3 do. Batches without one are read by the server with epoch {@code NO_WRITER_EPOCH}.
-     */
     /** Marks that a request carrying this batch was sent and waits for its answer. */
     void markAwaitingResponse() {
         awaitingResponse = true;
@@ -207,6 +203,10 @@ public abstract class WriteBatch {
         return outcomeUnknown;
     }
 
+    /**
+     * Whether this batch carries a writer epoch in its header, which only log record batches of
+     * magic V3 do. Batches without one are read by the server with epoch {@code NO_WRITER_EPOCH}.
+     */
     public boolean hasWriterEpoch() {
         return false;
     }

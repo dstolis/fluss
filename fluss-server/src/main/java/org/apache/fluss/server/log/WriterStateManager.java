@@ -512,9 +512,8 @@ public class WriterStateManager {
         private static final String LAST_OFFSET_FILED = "last_offset";
         private static final String TIMESTAMP_FILED = "timestamp";
         // Version 2 adds writer_epoch, last_batch_first_sequence and earlier_batches. The last
-        // batch
-        // keeps its version 1 fields, and the other retained batches go to earlier_batches, so a
-        // retry of any of them still gets its original offsets after a restart. Older servers
+        // batch keeps its version 1 fields, and the other retained batches go to earlier_batches,
+        // so a retry of any of them still gets its original offsets after a restart. Older servers
         // ignore the new fields. Snapshots without them are read as epoch 0 and a single last
         // batch whose first and last sequence are equal.
         private static final int WRITER_ID_SNAPSHOT_VERSION = 2;
@@ -623,41 +622,6 @@ public class WriterStateManager {
         public final long lastBatchTimestamp;
         // The retained batches before the last one, ordered from the oldest to the newest.
         public final List<WriterStateEntry.BatchMetadata> earlierBatches;
-
-        public WriterSnapshotEntry(
-                long writerId,
-                int lastBatchSequence,
-                long lastBatchBaseOffset,
-                int lastBatchOffsetDelta,
-                long lastBatchTimestamp) {
-            this(
-                    writerId,
-                    NO_WRITER_EPOCH,
-                    lastBatchSequence,
-                    lastBatchSequence,
-                    lastBatchBaseOffset,
-                    lastBatchOffsetDelta,
-                    lastBatchTimestamp);
-        }
-
-        public WriterSnapshotEntry(
-                long writerId,
-                short writerEpoch,
-                int lastBatchFirstSequence,
-                int lastBatchSequence,
-                long lastBatchBaseOffset,
-                int lastBatchOffsetDelta,
-                long lastBatchTimestamp) {
-            this(
-                    writerId,
-                    writerEpoch,
-                    lastBatchFirstSequence,
-                    lastBatchSequence,
-                    lastBatchBaseOffset,
-                    lastBatchOffsetDelta,
-                    lastBatchTimestamp,
-                    Collections.emptyList());
-        }
 
         public WriterSnapshotEntry(
                 long writerId,

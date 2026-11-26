@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.compression.ArrowCompressionInfo.DEFAULT_COMPRESSION;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordReadContext.createArrowReadContext;
 import static org.apache.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
 import static org.apache.fluss.record.TestData.DATA1_ROW_TYPE;
@@ -140,7 +141,8 @@ public class ArrowLogWriteBatchTest {
                         new PreAllocatedPagedOutputView(memorySegmentList),
                         false,
                         System.currentTimeMillis(),
-                        null);
+                        null,
+                        LOG_MAGIC_VALUE_V0);
         assertThat(arrowLogWriteBatch.pooledMemorySegments()).isEqualTo(memorySegmentList);
 
         int count = 0;
@@ -218,7 +220,8 @@ public class ArrowLogWriteBatchTest {
                             new PreAllocatedPagedOutputView(memorySegmentList),
                             false,
                             System.currentTimeMillis(),
-                            null);
+                            null,
+                            LOG_MAGIC_VALUE_V0);
 
             int recordCount = 0;
             while (arrowLogWriteBatch.tryAppend(
@@ -322,7 +325,8 @@ public class ArrowLogWriteBatchTest {
                 new UnmanagedPagedOutputView(128),
                 false,
                 System.currentTimeMillis(),
-                null);
+                null,
+                LOG_MAGIC_VALUE_V0);
     }
 
     private WriteCallback newWriteCallback() {

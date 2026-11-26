@@ -164,7 +164,7 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     }
 
     /** Whether the sequence of this batch advances once per record instead of once per batch. */
-    boolean isPerRecordSequence() {
+    private boolean isPerRecordSequence() {
         return magic >= LOG_MAGIC_VALUE_V3 && (attributes() & PER_RECORD_SEQUENCE_FLAG_MASK) != 0;
     }
 

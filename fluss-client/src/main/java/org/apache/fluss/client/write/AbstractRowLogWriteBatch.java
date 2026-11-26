@@ -154,12 +154,8 @@ abstract class AbstractRowLogWriteBatch<R> extends WriteBatch {
 
     @Override
     public void setWriterEpoch(short writerEpoch) {
-        if (hasWriterEpoch()) {
-            // native writers count one sequence per batch
-            recordsBuilder.setWriterEpochAndSequenceMode(writerEpoch, false);
-        } else {
-            super.setWriterEpoch(writerEpoch);
-        }
+        // native writers count one sequence per batch; the builder rejects magic below V3
+        recordsBuilder.setWriterEpochAndSequenceMode(writerEpoch, false);
     }
 
     @Override

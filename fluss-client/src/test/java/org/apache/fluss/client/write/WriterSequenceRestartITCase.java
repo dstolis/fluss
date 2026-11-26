@@ -24,8 +24,6 @@ import org.apache.fluss.client.lookup.Lookuper;
 import org.apache.fluss.client.table.Table;
 import org.apache.fluss.client.table.writer.AppendWriter;
 import org.apache.fluss.client.table.writer.UpsertWriter;
-import org.apache.fluss.config.ConfigOptions;
-import org.apache.fluss.config.Configuration;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
@@ -65,7 +63,7 @@ class WriterSequenceRestartITCase {
     static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
             FlussClusterExtension.builder()
                     .setNumOfTabletServers(3)
-                    .setClusterConf(clusterConf())
+                    .setClusterConf(WriterStateExpirationITCaseBase.clusterConf())
                     .build();
 
     private static final String DATABASE = "test_db";
@@ -179,13 +177,6 @@ class WriterSequenceRestartITCase {
                 }
             }
         }
-    }
-
-    private static Configuration clusterConf() {
-        Configuration conf = new Configuration();
-        // every tablet server holds a replica of every bucket
-        conf.setInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR, 3);
-        return conf;
     }
 
     private List<TableBucket> createTable(TablePath tablePath, TableDescriptor descriptor)

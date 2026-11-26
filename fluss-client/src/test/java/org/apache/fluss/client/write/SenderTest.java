@@ -24,8 +24,6 @@ import org.apache.fluss.cluster.Cluster;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
-import org.apache.fluss.config.Configuration;
-import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.exception.AuthorizationException;
 import org.apache.fluss.exception.DiskWriteLockedException;
 import org.apache.fluss.exception.FlussRuntimeException;
@@ -45,26 +43,19 @@ import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TableOrPartition;
 import org.apache.fluss.metadata.TablePath;
-import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.row.BinaryRow;
-import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.encode.CompactedKeyEncoder;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.entity.PutKvResultForBucket;
 import org.apache.fluss.rpc.messages.ApiMessage;
 import org.apache.fluss.rpc.messages.ProduceLogRequest;
-import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.messages.PutKvRequest;
 import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.rpc.protocol.Errors;
-import org.apache.fluss.server.entity.ProduceLogDataForBucket;
 import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
 import org.apache.fluss.types.DataTypes;
-import org.apache.fluss.utils.ExponentialBackoff;
-import org.apache.fluss.utils.clock.Clock;
 import org.apache.fluss.utils.clock.ManualClock;
-import org.apache.fluss.utils.clock.SystemClock;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -95,7 +86,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.record.TestData.DATA1_ROW_TYPE;
 import static org.apache.fluss.record.TestData.DATA1_SCHEMA_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_DESCRIPTOR;
@@ -111,7 +101,6 @@ import static org.apache.fluss.record.TestData.DEFAULT_REMOTE_DATA_DIR;
 import static org.apache.fluss.rpc.protocol.Errors.SCHEMA_NOT_EXIST;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeProduceLogResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makePutKvResponse;
-import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toProduceLogDataForBuckets;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPutKvDataForBuckets;
 import static org.apache.fluss.testutils.DataTestUtils.compactedRow;
 import static org.apache.fluss.testutils.DataTestUtils.row;
@@ -121,29 +110,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** ITCase for {@link Sender}. */
-final class SenderTest {
-    private static final int TOTAL_MEMORY_SIZE = 1024 * 1024;
-    private static final int MAX_REQUEST_SIZE = 1024 * 1024;
-    private static final int BATCH_SIZE = 16 * 1024;
-    private static final int PAGE_SIZE = 256;
-    private static final int REQUEST_TIMEOUT = 5000;
-    private static final short ACKS_ALL = -1;
-    private static final int MAX_INFLIGHT_REQUEST_PER_BUCKET = 5;
-
-    private final TableBucket tb1 = new TableBucket(DATA1_TABLE_ID, 0);
-    private TestingMetadataUpdater metadataUpdater;
-    private RecordAccumulator accumulator = null;
-    private TestingBucketAssigner bucketAssigner;
+final class SenderTest extends SenderTestBase {
     private Sender sender = null;
-    private TestingWriterMetricGroup writerMetricGroup;
-    private Clock clock = SystemClock.getInstance();
 
     // TODO add more tests as kafka SenderTest.
 
     @BeforeEach
     public void setup() {
-        metadataUpdater = initializeMetadataUpdater();
-        writerMetricGroup = TestingWriterMetricGroup.newInstance();
         sender = setupWithIdempotenceState();
     }
 
@@ -885,7 +858,6 @@ final class SenderTest {
         Sender sender1 = setupWithIdempotenceState(idempotenceManager);
         sender1.runOnce();
         assertThat(idempotenceManager.isWriterIdValid()).isTrue();
-        assertThat(idempotenceManager.hasWriterId(0L)).isTrue();
         assertThat(idempotenceManager.writerId()).isEqualTo(0L);
     }
 
@@ -2248,13 +2220,6 @@ final class SenderTest {
         assertThat(accumulator.hasIncomplete()).isFalse();
     }
 
-    private TestingMetadataUpdater initializeMetadataUpdater() {
-        Map<TablePath, TableInfo> tableInfos = new HashMap<>();
-        tableInfos.put(DATA1_TABLE_PATH, DATA1_TABLE_INFO);
-        tableInfos.put(DATA1_TABLE_PATH_PK, DATA1_TABLE_INFO_PK);
-        return new TestingMetadataUpdater(tableInfos);
-    }
-
     private void resetTableInfosWith(TableInfo tableInfo) {
         Map<TablePath, TableInfo> tableInfos = new HashMap<>();
         tableInfos.put(DATA1_TABLE_PATH, DATA1_TABLE_INFO);
@@ -2411,22 +2376,6 @@ final class SenderTest {
         return future;
     }
 
-    private void appendToAccumulator(TableBucket tb, GenericRow row, WriteCallback writeCallback)
-            throws Exception {
-        appendToAccumulator(DATA1_TABLE_INFO, tb, row, writeCallback);
-    }
-
-    private void appendToAccumulator(
-            TableInfo tableInfo, TableBucket tb, GenericRow row, WriteCallback writeCallback)
-            throws Exception {
-        bucketAssigner.setBucketId(tb.getBucket());
-        accumulator.append(
-                WriteRecord.forArrowAppend(
-                        tableInfo, PhysicalTablePath.of(tableInfo.getTablePath()), row, null),
-                writeCallback,
-                metadataUpdater.getCluster());
-    }
-
     private void appendKvToAccumulator(
             TableBucket tableBucket, BinaryRow row, WriteCallback writeCallback) throws Exception {
         appendKvToAccumulator(DATA1_TABLE_INFO_PK, tableBucket, row, writeCallback);
@@ -2459,28 +2408,12 @@ final class SenderTest {
                 metadataUpdater.newTabletServerClientForNode(TestingMetadataUpdater.NODE1.id());
     }
 
-    private ApiMessage getRequest(TableBucket tb, int index) {
-        TestTabletServerGateway gateway =
-                (TestTabletServerGateway)
-                        metadataUpdater.newTabletServerClientForNode(
-                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
-        return gateway.getRequest(index);
-    }
-
     private void finishRequest(TableBucket tb, int index, ApiMessage response) {
         TestTabletServerGateway gateway =
                 (TestTabletServerGateway)
                         metadataUpdater.newTabletServerClientForNode(
                                 metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
         gateway.response(index, response);
-    }
-
-    private int pendingRequestSize(TableBucket tb) {
-        TestTabletServerGateway gateway =
-                (TestTabletServerGateway)
-                        metadataUpdater.newTabletServerClientForNode(
-                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
-        return gateway.pendingRequestSize();
     }
 
     private int findRequestIndex(TableBucket referenceBucket, long tableId) {
@@ -2511,39 +2444,6 @@ final class SenderTest {
         }
         throw new IllegalArgumentException(
                 "Expected a write request but found " + request.getClass().getName());
-    }
-
-    private void failRequest(TableBucket referenceBucket, int index, Throwable throwable) {
-        TestTabletServerGateway gateway =
-                (TestTabletServerGateway)
-                        metadataUpdater.newTabletServerClientForNode(
-                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, referenceBucket));
-        gateway.failRequest(index, throwable);
-    }
-
-    private void finishIdempotentProduceLogRequest(
-            int batchSequence, TableBucket tb, int index, ProduceLogResponse response) {
-        TestTabletServerGateway gateway =
-                (TestTabletServerGateway)
-                        metadataUpdater.newTabletServerClientForNode(
-                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
-        ApiMessage request = getRequest(tb1, index);
-        assertThat(request).isInstanceOf(ProduceLogRequest.class);
-        assertThat(hasIdempotentRecords(tb1, (ProduceLogRequest) request)).isTrue();
-        assertBatchSequenceEquals(tb1, (ProduceLogRequest) request, batchSequence);
-        gateway.response(index, response);
-    }
-
-    private ProduceLogResponse createProduceLogResponse(
-            TableBucket tb, long baseOffset, long endOffset) {
-        return makeProduceLogResponse(
-                Collections.singletonList(
-                        new ProduceLogResultForBucket(tb, baseOffset, endOffset)));
-    }
-
-    private ProduceLogResponse createProduceLogResponse(TableBucket tb, Errors error) {
-        return makeProduceLogResponse(
-                Collections.singletonList(new ProduceLogResultForBucket(tb, error.toApiError())));
     }
 
     private PutKvResponse createPutKvResponse(TableBucket tb, long endOffset) {
@@ -2856,80 +2756,5 @@ final class SenderTest {
         byte[] bytes = new byte[buffer.remaining()];
         buffer.duplicate().get(bytes);
         return bytes;
-    }
-
-    private Sender setupWithIdempotenceState() {
-        return setupWithIdempotenceState(createIdempotenceManager(false));
-    }
-
-    private Sender setupWithIdempotenceState(IdempotenceManager idempotenceManager) {
-        return setupWithIdempotenceState(idempotenceManager, Integer.MAX_VALUE, 0);
-    }
-
-    private Sender setupWithIdempotenceState(
-            IdempotenceManager idempotenceManager, int reties, int batchTimeoutMs) {
-        return setupWithIdempotenceState(idempotenceManager, reties, batchTimeoutMs, Duration.ZERO);
-    }
-
-    private Sender setupWithIdempotenceState(
-            IdempotenceManager idempotenceManager,
-            int reties,
-            int batchTimeoutMs,
-            Duration retryBackoff) {
-        Configuration conf = new Configuration();
-        conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE, new MemorySize(TOTAL_MEMORY_SIZE));
-        conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, new MemorySize(BATCH_SIZE));
-        conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE, new MemorySize(PAGE_SIZE));
-        conf.set(ConfigOptions.CLIENT_WRITER_BATCH_TIMEOUT, Duration.ofMillis(batchTimeoutMs));
-        conf.set(ConfigOptions.CLIENT_WRITER_RETRY_BACKOFF, retryBackoff);
-        conf.set(ConfigOptions.CLIENT_WRITER_RETRY_BACKOFF_MAX, retryBackoff);
-        bucketAssigner = new TestingBucketAssigner();
-        accumulator =
-                new RecordAccumulator(
-                        conf,
-                        idempotenceManager,
-                        writerMetricGroup,
-                        clock,
-                        new ExponentialBackoff(1000, 2, 10000, 0),
-                        (tableInfo, path) -> bucketAssigner);
-        return new Sender(
-                accumulator,
-                REQUEST_TIMEOUT,
-                MAX_REQUEST_SIZE,
-                ACKS_ALL,
-                reties,
-                metadataUpdater,
-                idempotenceManager,
-                writerMetricGroup);
-    }
-
-    private IdempotenceManager createIdempotenceManager(boolean idempotenceEnabled) {
-        return new IdempotenceManager(
-                idempotenceEnabled,
-                MAX_INFLIGHT_REQUEST_PER_BUCKET,
-                metadataUpdater.newRandomTabletServerClient(),
-                metadataUpdater);
-    }
-
-    private static boolean hasIdempotentRecords(TableBucket tb, ProduceLogRequest request) {
-        MemoryLogRecords memoryLogRecords = getProduceLogRecords(request, tb);
-        return memoryLogRecords.batchIterator().next().writerId() != NO_WRITER_ID;
-    }
-
-    private static void assertBatchSequenceEquals(
-            TableBucket tb, ProduceLogRequest request, int expectedBatchSequence) {
-        MemoryLogRecords memoryLogRecords = getProduceLogRecords(request, tb);
-        assertThat(memoryLogRecords.batchIterator().next().batchSequence())
-                .isEqualTo(expectedBatchSequence);
-    }
-
-    private static MemoryLogRecords getProduceLogRecords(
-            ProduceLogRequest request, TableBucket tableBucket) {
-        for (ProduceLogDataForBucket bucketData : toProduceLogDataForBuckets(request)) {
-            if (bucketData.tableBucket().equals(tableBucket)) {
-                return bucketData.records();
-            }
-        }
-        throw new IllegalArgumentException("No records found for table bucket " + tableBucket);
     }
 }

@@ -17,77 +17,27 @@
 
 package org.apache.fluss.client.write;
 
-import org.apache.fluss.client.metadata.TestingMetadataUpdater;
-import org.apache.fluss.client.metrics.TestingWriterMetricGroup;
-import org.apache.fluss.config.ConfigOptions;
-import org.apache.fluss.config.Configuration;
-import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
 import org.apache.fluss.exception.TimeoutException;
-import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
-import org.apache.fluss.metadata.TableInfo;
-import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.LogRecordBatch;
-import org.apache.fluss.record.MemoryLogRecords;
-import org.apache.fluss.row.GenericRow;
-import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
-import org.apache.fluss.rpc.messages.ApiMessage;
 import org.apache.fluss.rpc.messages.ProduceLogRequest;
-import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.protocol.Errors;
-import org.apache.fluss.server.entity.ProduceLogDataForBucket;
-import org.apache.fluss.server.tablet.TestTabletServerGateway;
-import org.apache.fluss.utils.ExponentialBackoff;
-import org.apache.fluss.utils.clock.Clock;
-import org.apache.fluss.utils.clock.SystemClock;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_ID;
-import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO;
-import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO_PK;
-import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
-import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH_PK;
 import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
-import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeProduceLogResponse;
-import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toProduceLogDataForBuckets;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests the writer epoch of the {@link Sender} for log record batches of magic V3. */
-final class SenderWriterEpochTest {
-    private static final int TOTAL_MEMORY_SIZE = 1024 * 1024;
-    private static final int MAX_REQUEST_SIZE = 1024 * 1024;
-    private static final int BATCH_SIZE = 16 * 1024;
-    private static final int PAGE_SIZE = 256;
-    private static final int REQUEST_TIMEOUT = 5000;
-    private static final short ACKS_ALL = -1;
-    private static final int MAX_INFLIGHT_REQUEST_PER_BUCKET = 5;
-
-    private final TableBucket tb1 = new TableBucket(DATA1_TABLE_ID, 0);
+final class SenderWriterEpochTest extends SenderTestBase {
     private final TableBucket tb2 = new TableBucket(DATA1_TABLE_ID, 1);
-    private TestingMetadataUpdater metadataUpdater;
-    private RecordAccumulator accumulator;
-    private TestingBucketAssigner bucketAssigner;
-    private TestingWriterMetricGroup writerMetricGroup;
-    private final Clock clock = SystemClock.getInstance();
-
-    @BeforeEach
-    void setup() {
-        metadataUpdater = initializeMetadataUpdater();
-        writerMetricGroup = TestingWriterMetricGroup.newInstance();
-    }
 
     /**
      * Batches of magic V3 carry a writer epoch. When the server reports a real gap, for example
@@ -346,12 +296,11 @@ final class SenderWriterEpochTest {
         for (int i = 0; i < 10 && !(future0.isDone() && future1.isDone()); i++) {
             sender1.runOnce();
             while (pendingRequestSize(tb1) > 0) {
-                TestTabletServerGateway gateway =
-                        (TestTabletServerGateway)
-                                metadataUpdater.newTabletServerClientForNode(
-                                        metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb1));
-                gateway.response(
-                        0, createProduceLogResponse(tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
+                leaderGateway(tb1)
+                        .response(
+                                0,
+                                createProduceLogResponse(
+                                        tb1, Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION));
             }
         }
         assertThat(future0).isDone();
@@ -461,132 +410,5 @@ final class SenderWriterEpochTest {
         LogRecordBatch batch = getProduceLogRecords(request, tb).batchIterator().next();
         assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V3);
         assertThat(batch.writerEpoch()).isEqualTo((short) expectedWriterEpoch);
-    }
-
-    private TestingMetadataUpdater initializeMetadataUpdater() {
-        Map<TablePath, TableInfo> tableInfos = new HashMap<>();
-        tableInfos.put(DATA1_TABLE_PATH, DATA1_TABLE_INFO);
-        tableInfos.put(DATA1_TABLE_PATH_PK, DATA1_TABLE_INFO_PK);
-        return new TestingMetadataUpdater(tableInfos);
-    }
-
-    private void appendToAccumulator(TableBucket tb, GenericRow row, WriteCallback writeCallback)
-            throws Exception {
-        bucketAssigner.setBucketId(tb.getBucket());
-        accumulator.append(
-                WriteRecord.forArrowAppend(
-                        DATA1_TABLE_INFO, PhysicalTablePath.of(DATA1_TABLE_PATH), row, null),
-                writeCallback,
-                metadataUpdater.getCluster());
-    }
-
-    private void failRequest(TableBucket tb, int index, Throwable throwable) {
-        TestTabletServerGateway gateway =
-                (TestTabletServerGateway)
-                        metadataUpdater.newTabletServerClientForNode(
-                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
-        gateway.failRequest(index, throwable);
-    }
-
-    private ApiMessage getRequest(TableBucket tb, int index) {
-        TestTabletServerGateway gateway =
-                (TestTabletServerGateway)
-                        metadataUpdater.newTabletServerClientForNode(
-                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
-        return gateway.getRequest(index);
-    }
-
-    private int pendingRequestSize(TableBucket tb) {
-        TestTabletServerGateway gateway =
-                (TestTabletServerGateway)
-                        metadataUpdater.newTabletServerClientForNode(
-                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
-        return gateway.pendingRequestSize();
-    }
-
-    private void finishIdempotentProduceLogRequest(
-            int batchSequence, TableBucket tb, int index, ProduceLogResponse response) {
-        TestTabletServerGateway gateway =
-                (TestTabletServerGateway)
-                        metadataUpdater.newTabletServerClientForNode(
-                                metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb));
-        ApiMessage request = getRequest(tb, index);
-        assertThat(request).isInstanceOf(ProduceLogRequest.class);
-        assertThat(hasIdempotentRecords(tb, (ProduceLogRequest) request)).isTrue();
-        assertBatchSequenceEquals(tb, (ProduceLogRequest) request, batchSequence);
-        gateway.response(index, response);
-    }
-
-    private ProduceLogResponse createProduceLogResponse(
-            TableBucket tb, long baseOffset, long endOffset) {
-        return makeProduceLogResponse(
-                Collections.singletonList(
-                        new ProduceLogResultForBucket(tb, baseOffset, endOffset)));
-    }
-
-    private ProduceLogResponse createProduceLogResponse(TableBucket tb, Errors error) {
-        return makeProduceLogResponse(
-                Collections.singletonList(new ProduceLogResultForBucket(tb, error.toApiError())));
-    }
-
-    private IdempotenceManager createIdempotenceManager(boolean idempotenceEnabled) {
-        return new IdempotenceManager(
-                idempotenceEnabled,
-                MAX_INFLIGHT_REQUEST_PER_BUCKET,
-                metadataUpdater.newRandomTabletServerClient(),
-                metadataUpdater);
-    }
-
-    private static boolean hasIdempotentRecords(TableBucket tb, ProduceLogRequest request) {
-        MemoryLogRecords memoryLogRecords = getProduceLogRecords(request, tb);
-        return memoryLogRecords.batchIterator().next().writerId() != NO_WRITER_ID;
-    }
-
-    private static void assertBatchSequenceEquals(
-            TableBucket tb, ProduceLogRequest request, int expectedBatchSequence) {
-        MemoryLogRecords memoryLogRecords = getProduceLogRecords(request, tb);
-        assertThat(memoryLogRecords.batchIterator().next().batchSequence())
-                .isEqualTo(expectedBatchSequence);
-    }
-
-    private static MemoryLogRecords getProduceLogRecords(
-            ProduceLogRequest request, TableBucket tableBucket) {
-        for (ProduceLogDataForBucket bucketData : toProduceLogDataForBuckets(request)) {
-            if (bucketData.tableBucket().equals(tableBucket)) {
-                return bucketData.records();
-            }
-        }
-        throw new IllegalArgumentException("No records found for table bucket " + tableBucket);
-    }
-
-    private Sender setupWithIdempotenceState(IdempotenceManager idempotenceManager) {
-        int reties = Integer.MAX_VALUE;
-        int batchTimeoutMs = 0;
-        Duration retryBackoff = Duration.ZERO;
-        Configuration conf = new Configuration();
-        conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE, new MemorySize(TOTAL_MEMORY_SIZE));
-        conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, new MemorySize(BATCH_SIZE));
-        conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE, new MemorySize(PAGE_SIZE));
-        conf.set(ConfigOptions.CLIENT_WRITER_BATCH_TIMEOUT, Duration.ofMillis(batchTimeoutMs));
-        conf.set(ConfigOptions.CLIENT_WRITER_RETRY_BACKOFF, retryBackoff);
-        conf.set(ConfigOptions.CLIENT_WRITER_RETRY_BACKOFF_MAX, retryBackoff);
-        bucketAssigner = new TestingBucketAssigner();
-        accumulator =
-                new RecordAccumulator(
-                        conf,
-                        idempotenceManager,
-                        writerMetricGroup,
-                        clock,
-                        new ExponentialBackoff(1000, 2, 10000, 0),
-                        (tableInfo, path) -> bucketAssigner);
-        return new Sender(
-                accumulator,
-                REQUEST_TIMEOUT,
-                MAX_REQUEST_SIZE,
-                ACKS_ALL,
-                reties,
-                metadataUpdater,
-                idempotenceManager,
-                writerMetricGroup);
     }
 }

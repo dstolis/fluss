@@ -36,8 +36,6 @@ import javax.annotation.concurrent.NotThreadSafe;
 import java.io.IOException;
 import java.util.List;
 
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -53,31 +51,6 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 public class ArrowLogWriteBatch extends WriteBatch {
     private final MemoryLogRecordsArrowBuilder recordsBuilder;
     private final AbstractPagedOutputView outputView;
-
-    public ArrowLogWriteBatch(
-            long tableId,
-            int bucketId,
-            int bucketCount,
-            PhysicalTablePath physicalTablePath,
-            int schemaId,
-            ArrowWriter arrowWriter,
-            AbstractPagedOutputView outputView,
-            boolean isHistoricalPartition,
-            long createdMs,
-            @Nullable LogRecordBatchStatisticsCollector statisticsCollector) {
-        this(
-                tableId,
-                bucketId,
-                bucketCount,
-                physicalTablePath,
-                schemaId,
-                arrowWriter,
-                outputView,
-                isHistoricalPartition,
-                createdMs,
-                statisticsCollector,
-                statisticsCollector != null ? LOG_MAGIC_VALUE_V1 : LOG_MAGIC_VALUE_V0);
-    }
 
     public ArrowLogWriteBatch(
             long tableId,
@@ -198,11 +171,7 @@ public class ArrowLogWriteBatch extends WriteBatch {
 
     @Override
     public void setWriterEpoch(short writerEpoch) {
-        if (hasWriterEpoch()) {
-            // native writers count one sequence per batch
-            recordsBuilder.setWriterEpochAndSequenceMode(writerEpoch, false);
-        } else {
-            super.setWriterEpoch(writerEpoch);
-        }
+        // native writers count one sequence per batch; the builder rejects magic below V3
+        recordsBuilder.setWriterEpochAndSequenceMode(writerEpoch, false);
     }
 }

@@ -432,7 +432,8 @@ class GatewayKafkaProduceBackendTest extends KafkaServerTestBase {
                                 123L,
                                 null,
                                 ByteBuffer.wrap(new byte[] {65}),
-                                Collections.emptyList())));
+                                Collections.emptyList())),
+                null);
     }
 
     /** One batch of an idempotent producer with {@code count} records. */

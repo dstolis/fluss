@@ -133,7 +133,7 @@ class ArrowKafkaRecordTranscoderTest {
                             envelope(string, systemFields).toTableDescriptor());
             KafkaTableSchema contract = KafkaTableSchema.resolve(table.toTableDescriptor());
             read(
-                    transcoder.transcode(7, Collections.singletonList(record), table),
+                    transcoder.transcode(7, Collections.singletonList(record), table, null),
                     table,
                     1,
                     row -> {
@@ -187,7 +187,7 @@ class ArrowKafkaRecordTranscoderTest {
                             null,
                             source.asReadOnlyBuffer(),
                             Collections.emptyList());
-            output = transcoder.transcode(0, Collections.singletonList(input), table);
+            output = transcoder.transcode(0, Collections.singletonList(input), table, null);
             assertThat(source.position()).isEqualTo(1);
             assertThat(source.remaining()).isEqualTo(expected.length);
             storage.setZero(0, storage.readableBytes());
@@ -208,7 +208,7 @@ class ArrowKafkaRecordTranscoderTest {
                                 bytes("key"),
                                 bytes("value"),
                                 Collections.singletonList(new RecordHeader("h", bytes("header")))));
-        EncodedRecords originalOutput = transcoder.transcode(7, records, original);
+        EncodedRecords originalOutput = transcoder.transcode(7, records, original, null);
         TableInfo changed =
                 table(
                         original.getTableId(),
@@ -228,7 +228,7 @@ class ArrowKafkaRecordTranscoderTest {
                                 .build());
 
         read(
-                transcoder.transcode(3, records, changed),
+                transcoder.transcode(3, records, changed, null),
                 changed,
                 1,
                 row -> {
@@ -289,7 +289,7 @@ class ArrowKafkaRecordTranscoderTest {
                         record(0L, new byte[0], new byte[0], Collections.emptyList()));
         AtomicInteger next = new AtomicInteger();
         read(
-                transcoder.transcode(0, records, table),
+                transcoder.transcode(0, records, table, null),
                 table,
                 2,
                 row -> {
@@ -327,7 +327,7 @@ class ArrowKafkaRecordTranscoderTest {
         for (int partition : new int[] {7, 3}) {
             AtomicInteger next = new AtomicInteger();
             read(
-                    transcoder.transcode(partition, records, table),
+                    transcoder.transcode(partition, records, table, null),
                     table,
                     records.size(),
                     row -> {
@@ -346,10 +346,11 @@ class ArrowKafkaRecordTranscoderTest {
     void testRejectsInvalidRequestBeforeAllocatingResources() {
         List<Record> records =
                 Collections.singletonList(record(1L, null, bytes("v"), Collections.emptyList()));
-        assertThatThrownBy(() -> transcoder.transcode(-1, records, valueTable()))
+        assertThatThrownBy(() -> transcoder.transcode(-1, records, valueTable(), null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("partition");
-        assertThatThrownBy(() -> transcoder.transcode(0, Collections.emptyList(), valueTable()))
+        assertThatThrownBy(
+                        () -> transcoder.transcode(0, Collections.emptyList(), valueTable(), null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("empty");
         TableInfo invalid =
@@ -360,11 +361,11 @@ class ArrowKafkaRecordTranscoderTest {
                                                 .build(),
                                         true)
                                 .build());
-        assertThatThrownBy(() -> transcoder.transcode(0, records, invalid))
+        assertThatThrownBy(() -> transcoder.transcode(0, records, invalid, null))
                 .isInstanceOf(InvalidTableException.class)
                 .hasMessageContaining("_kafka_value");
         TableInfo invalidId = table(42L, Short.MAX_VALUE + 1, valueTable().toTableDescriptor());
-        assertThatThrownBy(() -> transcoder.transcode(0, records, invalidId))
+        assertThatThrownBy(() -> transcoder.transcode(0, records, invalidId, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("schemaId");
         assertThat(transcoder.writerPool().freeWriters()).isEmpty();
@@ -412,7 +413,7 @@ class ArrowKafkaRecordTranscoderTest {
                         return 2;
                     }
                 };
-        Throwable failure = catchThrowable(() -> transcoder.transcode(0, records, table));
+        Throwable failure = catchThrowable(() -> transcoder.transcode(0, records, table, null));
         assertThat(failure).isInstanceOf(FlussRuntimeException.class).hasCause(expected);
         assertThat(failure.getSuppressed()).isEmpty();
         assertTranscoderRemainsUsable(table);
@@ -532,13 +533,14 @@ class ArrowKafkaRecordTranscoderTest {
             new Random(42).nextBytes(value);
             try (ArrowKafkaRecordTranscoder encoder =
                             new ArrowKafkaRecordTranscoder(allocator, pool);
-                    EncodedRecords output = encoder.transcode(0, records(value), table)) {
+                    EncodedRecords output = encoder.transcode(0, records(value), table, null)) {
                 MemoryLogRecords records = output.records();
                 int pagesInUse = pool.usedPages();
                 assertThat(pagesInUse).isPositive();
                 ArrowWriter writer = idleWriter(encoder);
                 long epoch = writer.getEpoch();
-                try (EncodedRecords next = encoder.transcode(0, records(new byte[] {7}), table)) {
+                try (EncodedRecords next =
+                        encoder.transcode(0, records(new byte[] {7}), table, null)) {
                     assertRecords(next.records(), table, new byte[] {7});
                 }
                 assertThat(pool.usedPages()).isEqualTo(pagesInUse);
@@ -597,7 +599,7 @@ class ArrowKafkaRecordTranscoderTest {
     }
 
     private EncodedRecords transcode(TableInfo table, byte[]... values) throws Exception {
-        return transcoder.transcode(0, records(values), table);
+        return transcoder.transcode(0, records(values), table, null);
     }
 
     private static List<Record> records(byte[]... values) {
@@ -633,7 +635,7 @@ class ArrowKafkaRecordTranscoderTest {
                         return 2;
                     }
                 };
-        return transcoder.transcode(0, records, table);
+        return transcoder.transcode(0, records, table, null);
     }
 
     private static ArrowWriter idleWriter(ArrowKafkaRecordTranscoder transcoder) {

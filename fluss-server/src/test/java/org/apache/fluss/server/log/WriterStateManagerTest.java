@@ -22,7 +22,9 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidWriterEpochException;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.record.DefaultLogRecordBatch;
 import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.testutils.DataTestUtils;
 import org.apache.fluss.utils.clock.ManualClock;
 import org.apache.fluss.utils.types.Tuple2;
@@ -129,15 +131,13 @@ public class WriterStateManagerTest {
     @Test
     void testPrepareUpdateDoesNotMutate() {
         WriterAppendInfo appendInfo = stateManager.prepareUpdate(writerId);
-        appendInfo.appendDataBatch(
-                0, new LogOffsetMetadata(15L), 20L, false, true, System.currentTimeMillis());
+        appendInfo.append(batch(writerId, 0, 6, 15L, System.currentTimeMillis()), false, true);
         assertThat(stateManager.lastEntry(writerId)).isNotPresent();
         stateManager.update(appendInfo);
         assertThat(stateManager.lastEntry(writerId)).isPresent();
 
         WriterAppendInfo nextAppendInfo = stateManager.prepareUpdate(writerId);
-        nextAppendInfo.appendDataBatch(
-                1, new LogOffsetMetadata(26L), 30L, false, true, System.currentTimeMillis());
+        nextAppendInfo.append(batch(writerId, 1, 5, 26L, System.currentTimeMillis()), false, true);
         assertThat(stateManager.lastEntry(writerId)).isPresent();
 
         WriterStateEntry lastEntry = stateManager.lastEntry(writerId).get();
@@ -717,15 +717,28 @@ public class WriterStateManagerTest {
             boolean isWriterInBatchExpired,
             long lastTimestamp) {
         WriterAppendInfo appendInfo = stateManager.prepareUpdate(writerId);
-        appendInfo.appendDataBatch(
-                batchSequence,
-                new LogOffsetMetadata(offset),
-                offset,
+        appendInfo.append(
+                batch(writerId, batchSequence, 1, offset, lastTimestamp),
                 isWriterInBatchExpired,
-                true,
-                lastTimestamp);
+                true);
         stateManager.update(appendInfo);
         stateManager.updateMapEndOffset(offset + 1);
+    }
+
+    /** A batch of an older magic than V3 with the given writer state, as the client writes it. */
+    private static LogRecordBatch batch(
+            long writerId, int batchSequence, int recordCount, long baseOffset, long timestamp) {
+        MemoryLogRecords records;
+        try {
+            records =
+                    DataTestUtils.genMemoryLogRecordsWithWriterId(
+                            DATA1.subList(0, recordCount), writerId, batchSequence, baseOffset);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        DefaultLogRecordBatch batch = (DefaultLogRecordBatch) records.batches().iterator().next();
+        batch.setCommitTimestamp(timestamp);
+        return batch;
     }
 
     private Set<Long> currentSnapshotOffsets() {

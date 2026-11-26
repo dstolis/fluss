@@ -215,8 +215,9 @@ public final class GatewayKafkaProduceBackend implements KafkaProduceBackend {
      * batches of magic V3. Only they store the producer epoch and the sequence of every record,
      * which the duplicate and ordering checks of idempotent producers need.
      *
-     * <p>The check is made here because the records are appended to the local replicas directly,
-     * without the check the tablet server makes on the batches of a produce request.
+     * <p>Appending the records to the local replicas checks the batch format as well, but fails
+     * with an error the Kafka producer does not retry. Checking here first answers with a retriable
+     * error, and skips transcoding records that would be rejected.
      */
     private boolean idempotentProduceEnabled() {
         return replicaManager

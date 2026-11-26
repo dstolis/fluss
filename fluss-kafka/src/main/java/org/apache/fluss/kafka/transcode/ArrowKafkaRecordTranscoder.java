@@ -78,12 +78,6 @@ public final class ArrowKafkaRecordTranscoder implements KafkaRecordTranscoder {
     }
 
     @Override
-    public EncodedRecords transcode(int partitionId, List<Record> records, TableInfo tableInfo)
-            throws Exception {
-        return transcode(partitionId, records, tableInfo, null);
-    }
-
-    @Override
     public EncodedRecords transcode(
             int partitionId,
             List<Record> records,

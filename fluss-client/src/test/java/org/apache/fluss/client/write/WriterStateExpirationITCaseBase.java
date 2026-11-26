@@ -70,6 +70,7 @@ abstract class WriterStateExpirationITCaseBase {
 
     protected static Configuration clusterConf() {
         Configuration conf = new Configuration();
+        // every tablet server holds a replica of every bucket
         conf.setInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR, 3);
         return conf;
     }

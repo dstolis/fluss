@@ -43,10 +43,10 @@ public class WriterSnapshotMapJsonSerdeTest extends JsonSerdeTestBase<WriterSnap
     protected WriterSnapshotMap[] createObjects() {
         List<WriterSnapshotEntry> entries =
                 Arrays.asList(
-                        new WriterSnapshotEntry(1001, 23, 100, 1000, 2000),
-                        new WriterSnapshotEntry(1001, 25, 200, 3000, 4000),
-                        new WriterSnapshotEntry(1002, 33, 300, 4000, 5000),
-                        new WriterSnapshotEntry(1003, (short) 2, 10, 14, 400, 4, 6000),
+                        entry(1001, (short) 0, 23, 23, 100, 1000, 2000),
+                        entry(1001, (short) 0, 25, 25, 200, 3000, 4000),
+                        entry(1002, (short) 0, 33, 33, 300, 4000, 5000),
+                        entry(1003, (short) 2, 10, 14, 400, 4, 6000),
                         new WriterSnapshotEntry(
                                 1004,
                                 (short) 1,
@@ -90,7 +90,26 @@ public class WriterSnapshotMapJsonSerdeTest extends JsonSerdeTestBase<WriterSnap
                 .isEqualTo(
                         new WriterSnapshotMap(
                                 Collections.singletonList(
-                                        new WriterSnapshotEntry(
-                                                1001, (short) 0, 23, 23, 100, 1000, 2000))));
+                                        entry(1001, (short) 0, 23, 23, 100, 1000, 2000))));
+    }
+
+    /** A snapshot entry without batches before the last one. */
+    private static WriterSnapshotEntry entry(
+            long writerId,
+            short writerEpoch,
+            int lastBatchFirstSequence,
+            int lastBatchSequence,
+            long lastBatchBaseOffset,
+            int lastBatchOffsetDelta,
+            long lastBatchTimestamp) {
+        return new WriterSnapshotEntry(
+                writerId,
+                writerEpoch,
+                lastBatchFirstSequence,
+                lastBatchSequence,
+                lastBatchBaseOffset,
+                lastBatchOffsetDelta,
+                lastBatchTimestamp,
+                Collections.emptyList());
     }
 }

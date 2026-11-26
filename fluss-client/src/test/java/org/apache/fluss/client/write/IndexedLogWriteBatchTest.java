@@ -244,7 +244,8 @@ public class IndexedLogWriteBatchTest {
                 writeLimit,
                 new PreAllocatedPagedOutputView(Collections.singletonList(memorySegment)),
                 false,
-                System.currentTimeMillis());
+                System.currentTimeMillis(),
+                CURRENT_LOG_MAGIC_VALUE);
     }
 
     private void assertDefaultLogRecordBatchEquals(

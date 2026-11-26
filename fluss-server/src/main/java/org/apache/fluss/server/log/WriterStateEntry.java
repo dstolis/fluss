@@ -125,10 +125,6 @@ public class WriterStateEntry {
         return new ArrayList<>(batchMetadata);
     }
 
-    public void addBath(int batchSequence, long lastOffset, int offsetDelta, long timestamp) {
-        addBath(batchSequence, batchSequence, lastOffset, offsetDelta, timestamp);
-    }
-
     public void addBath(
             int firstSequence, int lastSequence, long lastOffset, int offsetDelta, long timestamp) {
         addBatchMetadata(
@@ -181,12 +177,6 @@ public class WriterStateEntry {
                 .findFirst();
     }
 
-    public Optional<BatchMetadata> findDuplicateBatch(int arriveBatchSequence) {
-        return batchMetadata.stream()
-                .filter(batchMetadata -> batchMetadata.batchSequence == arriveBatchSequence)
-                .findFirst();
-    }
-
     /**
      * Returns a new instance with the provided parameters and the values from the current instance
      * otherwise.
@@ -206,15 +196,6 @@ public class WriterStateEntry {
         public final long lastOffset;
         public final int offsetDelta;
         public final long timestamp;
-
-        public BatchMetadata(
-                long writerId,
-                int batchSequence,
-                long lastOffset,
-                int offsetDelta,
-                long timestamp) {
-            this(writerId, batchSequence, batchSequence, lastOffset, offsetDelta, timestamp);
-        }
 
         public BatchMetadata(
                 long writerId,

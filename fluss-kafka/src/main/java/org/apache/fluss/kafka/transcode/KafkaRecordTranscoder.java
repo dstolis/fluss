@@ -40,32 +40,21 @@ public interface KafkaRecordTranscoder extends AutoCloseable {
      * Implementations may cache conversion plans by table ID and schema ID until invalidation or
      * expiration.
      *
+     * <p>If {@code idempotentBatch} is not null, the records were sent by an idempotent producer
+     * and the result is a log record batch of magic V3 that carries the producer ID, the producer
+     * epoch and the sequence of its first record, and numbers its records individually.
+     *
      * <p>The caller keeps input storage alive and unchanged until this method returns or throws.
      * The output is independent of the input buffers, but retains pooled memory. The caller must
      * invoke {@link EncodedRecords#deallocate()} after the log append completes or fails, and
      * before the owner closes the shared memory segment pool.
      */
-    EncodedRecords transcode(int partitionId, List<Record> records, TableInfo tableInfo)
-            throws Exception;
-
-    /**
-     * Transcodes the records an idempotent producer sent for one partition, as {@link
-     * #transcode(int, List, TableInfo)} does. If {@code idempotentBatch} is not null, the result is
-     * a log record batch of magic V3 that carries the producer ID, the producer epoch and the
-     * sequence of its first record, and numbers its records individually.
-     */
-    default EncodedRecords transcode(
+    EncodedRecords transcode(
             int partitionId,
             List<Record> records,
             TableInfo tableInfo,
             @Nullable IdempotentBatch idempotentBatch)
-            throws Exception {
-        if (idempotentBatch == null) {
-            return transcode(partitionId, records, tableInfo);
-        }
-        throw new UnsupportedOperationException(
-                "This transcoder does not support idempotent producers.");
-    }
+            throws Exception;
 
     /** Releases resources owned by the transcoder. */
     @Override

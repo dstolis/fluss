@@ -53,8 +53,10 @@ public interface KafkaProduceBackend extends AutoCloseable {
      * Allocates the producer ID of a new idempotent producer. It is a Fluss writer ID, so the
      * records of the producer are checked like those of a Fluss writer.
      *
-     * <p>The future fails with {@link UnsupportedForMessageFormatException} while the cluster does
-     * not allow the log record batch format that stores what idempotence needs.
+     * <p>A backend that supports idempotent producers fails the future with {@link
+     * UnsupportedForMessageFormatException} while the cluster does not allow the log record batch
+     * format that stores what idempotence needs. The default implementation is for backends without
+     * idempotent producer support and fails it with {@link UnsupportedVersionException}.
      */
     default CompletableFuture<Long> initProducerId(
             String listenerName, @Nullable InetAddress clientAddress, FlussPrincipal principal) {

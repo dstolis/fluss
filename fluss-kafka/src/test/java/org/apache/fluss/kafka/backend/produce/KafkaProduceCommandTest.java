@@ -209,7 +209,7 @@ class KafkaProduceCommandTest {
                                 new Record(
                                         Record.NO_TIMESTAMP, null, null, Collections.emptyList())));
         List<PartitionWrite> partitions =
-                new ArrayList<>(Collections.singletonList(new PartitionWrite(2, records)));
+                new ArrayList<>(Collections.singletonList(new PartitionWrite(2, records, null)));
         List<TopicWrite> topics =
                 new ArrayList<>(Collections.singletonList(new TopicWrite("db.topic", partitions)));
         KafkaProduceCommand command =

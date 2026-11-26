@@ -256,7 +256,8 @@ public class CompactedLogWriteBatchTest {
                 writeLimit,
                 new PreAllocatedPagedOutputView(Collections.singletonList(memorySegment)),
                 false,
-                System.currentTimeMillis());
+                System.currentTimeMillis(),
+                CURRENT_LOG_MAGIC_VALUE);
     }
 
     private TableInfo withTableIdAndSchemaId(long tableId, int schemaId) {

@@ -27,7 +27,6 @@ import org.apache.fluss.rpc.messages.ProduceLogRequest;
 
 import javax.annotation.concurrent.NotThreadSafe;
 
-import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
@@ -39,29 +38,6 @@ import static org.apache.fluss.utils.Preconditions.checkArgument;
 @NotThreadSafe
 @Internal
 public final class CompactedLogWriteBatch extends AbstractRowLogWriteBatch<CompactedRow> {
-
-    public CompactedLogWriteBatch(
-            long tableId,
-            int bucketId,
-            int bucketCount,
-            PhysicalTablePath physicalTablePath,
-            int schemaId,
-            int writeLimit,
-            AbstractPagedOutputView outputView,
-            boolean isHistoricalPartition,
-            long createdMs) {
-        this(
-                tableId,
-                bucketId,
-                bucketCount,
-                physicalTablePath,
-                schemaId,
-                writeLimit,
-                outputView,
-                isHistoricalPartition,
-                createdMs,
-                CURRENT_LOG_MAGIC_VALUE);
-    }
 
     public CompactedLogWriteBatch(
             long tableId,

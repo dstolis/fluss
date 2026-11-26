@@ -130,11 +130,6 @@ public final class KafkaProduceCommand {
         private final List<Record> records;
         private final @Nullable IdempotentBatch idempotentBatch;
 
-        /** Creates the writes for one partition. */
-        public PartitionWrite(int partitionId, List<Record> records) {
-            this(partitionId, records, null);
-        }
-
         /**
          * Creates the writes for one partition. The records were sent by an idempotent producer if
          * {@code idempotentBatch} is not null.
