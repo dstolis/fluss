@@ -60,7 +60,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.TestData.DATA1;
 import static org.apache.fluss.record.TestData.DATA1_SCHEMA;
@@ -172,7 +172,7 @@ class LogRecordBatchV3ITCase {
         assertThat(bucketResp.hasErrorCode()).isFalse();
         assertV3Batches(MemoryLogRecords.pointToBytes(bucketResp.getRecords()));
 
-        // a client whose FETCH_LOG version can't read V3 gets the batches converted to V0,
+        // a client whose FETCH_LOG version can't read V3 gets the batches converted to V2,
         // with the same records and offsets
         LogRecords converted = fetchAsOldClient(leaderId, tb);
         List<LogRecordBatch> convertedBatches = new ArrayList<>();
@@ -181,7 +181,7 @@ class LogRecordBatchV3ITCase {
         for (int i = 0; i < convertedBatches.size(); i++) {
             LogRecordBatch batch = convertedBatches.get(i);
             batch.ensureValid();
-            assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V0);
+            assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
             assertThat(batch.baseLogOffset()).isEqualTo(i * 3L);
             assertThat(batch.lastLogOffset()).isEqualTo(i * 3L + 2);
         }

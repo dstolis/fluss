@@ -59,7 +59,7 @@ import static org.apache.fluss.utils.FlussPaths.remoteLogSegmentFile;
  * <p>A client whose {@code FETCH_LOG} version reads batches only up to magic V2 cannot download a
  * remote segment that holds V3 batches. The leader then reads the segment on the client's behalf,
  * which costs a remote read for every fetch. So that repeated scans don't pay this, the leader
- * writes a copy of the segment once, in the background, with every batch above V2 rewritten as V0.
+ * writes a copy of the segment once, in the background, with every batch above V2 rewritten as V2.
  * From then on it hands the copy out like any other remote segment, and the client downloads it.
  *
  * <p>A copy lives inside the directory of its segment, at {@code

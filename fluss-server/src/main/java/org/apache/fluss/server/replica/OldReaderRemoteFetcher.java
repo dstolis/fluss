@@ -52,7 +52,7 @@ import java.util.List;
  * segments, such as a client whose {@code FETCH_LOG} version reads batches only up to magic V2.
  *
  * <p>The leading segments the client can decode are handed out as usual. For the first segment it
- * can't decode, the client gets the segment's V0 copy if there is one, see {@link
+ * can't decode, the client gets the segment's V2 copy if there is one, see {@link
  * RemoteLogCompatCopies}. Until the copy is written, the server reads the segment on the client's
  * behalf and returns the converted batches inline.
  */

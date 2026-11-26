@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V3;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_EPOCH;
@@ -36,6 +37,7 @@ import static org.apache.fluss.record.TestData.DEFAULT_SCHEMA_ID;
 import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
 import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsV3;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link LogRecordBatchConverter}. */
 class LogRecordBatchConverterTest {
@@ -44,7 +46,7 @@ class LogRecordBatchConverterTest {
             new TestingSchemaGetter(DEFAULT_SCHEMA_ID, DATA1_SCHEMA);
 
     @Test
-    void testV3BatchIsConvertedToV0WithTheSameRecords() throws Exception {
+    void testV3BatchIsConvertedToV2WithTheSameRecords() throws Exception {
         List<Object[]> rows = DATA1.subList(0, 3);
         MemoryLogRecords v3 = genMemoryLogRecordsV3(rows, 7L, (short) 2, 5, true, 10L);
         LogRecordBatch original = v3.batches().iterator().next();
@@ -55,21 +57,22 @@ class LogRecordBatchConverterTest {
         assertThat(batches).hasSize(1);
         LogRecordBatch batch = batches.get(0);
         batch.ensureValid();
-        assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V0);
+        assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
         assertThat(batch.baseLogOffset()).isEqualTo(original.baseLogOffset());
+        assertThat(batch.leaderEpoch()).isEqualTo(original.leaderEpoch());
         assertThat(batch.lastLogOffset()).isEqualTo(original.lastLogOffset());
         assertThat(batch.commitTimestamp()).isEqualTo(original.commitTimestamp());
         assertThat(batch.schemaId()).isEqualTo(original.schemaId());
         assertThat(batch.writerId()).isEqualTo(7L);
         assertThat(batch.batchSequence()).isEqualTo(5);
-        // the writer epoch and the per-record sequence mode are not part of V0
+        // the writer epoch and the per-record sequence mode are not part of V2
         assertThat(batch.writerEpoch()).isEqualTo(NO_WRITER_EPOCH);
         assertThat(batch.lastSequence()).isEqualTo(5);
         assertThat(readIndexedRows(converted)).containsExactlyElementsOf(readIndexedRows(v3));
     }
 
     @Test
-    void testArrowBatchWithStatisticsIsConvertedToV0() throws Exception {
+    void testArrowBatchWithStatisticsIsConvertedToV2WithItsStatistics() throws Exception {
         MemoryLogRecords v3 =
                 createLogRecordsWithStatistics(
                         DATA1, DATA1_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID, LOG_MAGIC_VALUE_V3);
@@ -78,8 +81,21 @@ class LogRecordBatchConverterTest {
 
         LogRecordBatch batch = batches(converted).get(0);
         batch.ensureValid();
-        assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V0);
+        assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
         assertThat(readArrowRows(converted)).containsExactlyElementsOf(readArrowRows(v3));
+        // V2 keeps the statistics, so readers can still skip the batch by its column ranges
+        try (LogRecordReadContext context =
+                LogRecordReadContext.createArrowReadContext(
+                        DATA1_ROW_TYPE, DEFAULT_SCHEMA_ID, schemaGetter)) {
+            LogRecordBatchStatistics expected =
+                    v3.batches().iterator().next().getStatistics(context).get();
+            LogRecordBatchStatistics actual = batch.getStatistics(context).get();
+            assertThat(actual.getMinValues().getInt(0))
+                    .isEqualTo(expected.getMinValues().getInt(0));
+            assertThat(actual.getMaxValues().getInt(0))
+                    .isEqualTo(expected.getMaxValues().getInt(0));
+            assertThat(actual.getNullCounts()).isEqualTo(expected.getNullCounts());
+        }
     }
 
     @Test
@@ -105,11 +121,22 @@ class LogRecordBatchConverterTest {
 
         List<LogRecordBatch> batches = batches(converted);
         assertThat(batches).hasSize(2);
-        assertThat(batches.get(0).magic()).isEqualTo(LOG_MAGIC_VALUE_V0);
+        // the V3 batch is converted, the V0 batch is copied as stored
+        assertThat(batches.get(0).magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
         assertThat(batches.get(1).magic()).isEqualTo(LOG_MAGIC_VALUE_V0);
         batches.forEach(LogRecordBatch::ensureValid);
         assertThat(LogRecordBatchConverter.containsMagicAbove(converted, LOG_MAGIC_VALUE_V2))
                 .isFalse();
+    }
+
+    @Test
+    void testReaderBelowV2IsRejected() throws Exception {
+        MemoryLogRecords v3 =
+                genMemoryLogRecordsV3(DATA1.subList(0, 2), 7L, (short) 0, 0, false, 0L);
+
+        assertThatThrownBy(() -> LogRecordBatchConverter.convert(v3, LOG_MAGIC_VALUE_V1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("converted to magic V2");
     }
 
     private static List<LogRecordBatch> batches(LogRecords records) {

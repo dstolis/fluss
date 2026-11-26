@@ -97,7 +97,7 @@ public final class RemoteLogSegmentReadUtils {
 
     /**
      * Copies every batch of a segment stream to {@code out}, one batch at a time, with the batches
-     * whose magic is above {@code maxMagic} rewritten as V0.
+     * whose magic is above {@code maxMagic} rewritten as V2.
      *
      * @param in the data of the segment, positioned at its start
      * @param segmentSize the size of the segment in bytes

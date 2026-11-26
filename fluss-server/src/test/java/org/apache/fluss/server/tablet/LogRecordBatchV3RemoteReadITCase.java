@@ -51,7 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
+import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
 import static org.apache.fluss.record.TestData.DATA1;
 import static org.apache.fluss.record.TestData.DATA1_SCHEMA;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.assertProduceLogResponse;
@@ -137,7 +137,7 @@ class LogRecordBatchV3RemoteReadITCase {
                     .isEqualTo(fetchOffset);
             for (LogRecordBatch batch : batches) {
                 batch.ensureValid();
-                assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V0);
+                assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
                 records += batch.getRecordCount();
                 fetchOffset = batch.nextLogOffset();
             }
@@ -152,7 +152,7 @@ class LogRecordBatchV3RemoteReadITCase {
                                 .baseLogOffset())
                 .isEqualTo(secondBatchBaseOffset);
 
-        // the server writes a V0 copy of the segment in the background and then hands it out,
+        // the server writes a V2 copy of the segment in the background and then hands it out,
         // so old clients download it instead of the server reading the segment for every fetch
         int fetchSize = batchSizeInBytes;
         retry(
@@ -169,7 +169,7 @@ class LogRecordBatchV3RemoteReadITCase {
         long expectedOffset = 0L;
         for (LogRecordBatch batch : copied) {
             batch.ensureValid();
-            assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V0);
+            assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
             assertThat(batch.baseLogOffset()).isEqualTo(expectedOffset);
             expectedOffset = batch.nextLogOffset();
         }
@@ -192,7 +192,7 @@ class LogRecordBatchV3RemoteReadITCase {
             int leaderId, TableBucket tb, long fetchOffset, int maxBytes) throws Exception {
         FetchLogResultForBucket bucketResult = fetch(leaderId, tb, fetchOffset, maxBytes);
         if (bucketResult.records() == null) {
-            // the V0 copy of the segment, never a segment the client can't decode
+            // the V2 copy of the segment, never a segment the client can't decode
             RemoteLogFetchInfo remote = bucketResult.remoteLogFetchInfo();
             assertThat(remote).isNotNull();
             for (RemoteLogSegment segment : remote.remoteLogSegmentList()) {
