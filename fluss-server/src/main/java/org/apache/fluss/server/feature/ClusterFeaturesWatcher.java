@@ -18,7 +18,6 @@
 package org.apache.fluss.server.feature;
 
 import org.apache.fluss.annotation.Internal;
-import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.utils.FatalErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.ZkData;
@@ -30,7 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * Follows the finalized cluster feature levels in ZooKeeper on a tablet server and applies every
@@ -80,9 +78,10 @@ public class ClusterFeaturesWatcher implements AutoCloseable {
                 return;
             }
             try {
-                Map<String, Integer> storedLevels =
-                        ZkData.ClusterFeaturesZNode.decode(newData.getData());
-                List<String> unsupported = ClusterFeatures.unsupportedByThisBuild(storedLevels);
+                List<String> unsupported =
+                        clusterFeatures.applyStored(
+                                ZkData.ClusterFeaturesZNode.decode(newData.getData()),
+                                newData.getStat().getVersion());
                 if (!unsupported.isEmpty()) {
                     fatalErrorHandler.onFatalError(
                             new IllegalStateException(
@@ -90,10 +89,7 @@ public class ClusterFeaturesWatcher implements AutoCloseable {
                                             "The cluster finalized the cluster features %s, which "
                                                     + "this tablet server does not support.",
                                             unsupported)));
-                    return;
                 }
-                clusterFeatures.apply(
-                        ClusterFeatureLevels.fromMap(storedLevels), newData.getStat().getVersion());
             } catch (Throwable t) {
                 LOG.error("Failed to apply the finalized cluster feature levels.", t);
             }

@@ -162,14 +162,15 @@ class ClusterFeatureManagerTest {
 
         assertThat(
                         manager.update(level(3), false, null, epochZkVersion, admitted)
-                                .levels()
+                                .data()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
-        assertThat(manager.finalizedLevels().level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
+        assertThat(ClusterFeatures.finalizedLevels(zkClient).level(LOG_RECORD_BATCH_VERSION))
+                .isEqualTo(3);
         // raising to the finalized level again changes nothing
         assertThat(
                         manager.update(level(3), false, null, epochZkVersion, admitted)
-                                .levels()
+                                .data()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
     }
@@ -182,10 +183,11 @@ class ClusterFeatureManagerTest {
 
         assertThat(
                         manager.update(level(3), true, null, epochZkVersion, admitted)
-                                .levels()
+                                .data()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
-        assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
+        assertThat(ClusterFeatures.finalizedLevels(zkClient))
+                .isEqualTo(ClusterFeatureLevels.baseline());
 
         // and it reports the same rejection as the raise itself
         registerTabletServer(1, NO_FEATURES);
@@ -206,7 +208,8 @@ class ClusterFeatureManagerTest {
         assertThatThrownBy(() -> manager.update(level(3), false, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("[tablet server 1] do not support it");
-        assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
+        assertThat(ClusterFeatures.finalizedLevels(zkClient))
+                .isEqualTo(ClusterFeatureLevels.baseline());
     }
 
     @Test
@@ -221,7 +224,8 @@ class ClusterFeatureManagerTest {
         assertThatThrownBy(() -> manager.update(level(3), false, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("[coordinator c1] do not support it");
-        assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
+        assertThat(ClusterFeatures.finalizedLevels(zkClient))
+                .isEqualTo(ClusterFeatureLevels.baseline());
     }
 
     @Test
@@ -240,7 +244,7 @@ class ClusterFeatureManagerTest {
         registerTabletServer(5, ClusterFeatures.supportedFeatures());
         assertThat(
                         manager.update(level(3), false, null, epochZkVersion, admitted)
-                                .levels()
+                                .data()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
     }
@@ -276,7 +280,7 @@ class ClusterFeatureManagerTest {
         assertThat(manager.supportedLevels(admitted).level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
         assertThat(
                         manager.update(level(3), false, null, epochZkVersion, admitted)
-                                .levels()
+                                .data()
                                 .level(LOG_RECORD_BATCH_VERSION))
                 .isEqualTo(3);
 
@@ -290,16 +294,16 @@ class ClusterFeatureManagerTest {
         int epochZkVersion = startUpgradedCluster();
         registerTabletServer(0, ClusterFeatures.supportedFeatures());
         ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
-        assertThat(manager.finalizedState().epoch()).isEqualTo(0);
+        assertThat(manager.finalizedState().zkVersion()).isEqualTo(0);
 
         // validating does not change the epoch
-        assertThat(manager.update(level(3), true, 0, epochZkVersion, admitted).epoch())
+        assertThat(manager.update(level(3), true, 0, epochZkVersion, admitted).zkVersion())
                 .isEqualTo(0);
-        assertThat(manager.update(level(3), false, 0, epochZkVersion, admitted).epoch())
+        assertThat(manager.update(level(3), false, 0, epochZkVersion, admitted).zkVersion())
                 .isEqualTo(1);
-        assertThat(manager.finalizedState().epoch()).isEqualTo(1);
+        assertThat(manager.finalizedState().zkVersion()).isEqualTo(1);
         // a raise to the levels the cluster already has changes nothing
-        assertThat(manager.update(level(3), false, null, epochZkVersion, admitted).epoch())
+        assertThat(manager.update(level(3), false, null, epochZkVersion, admitted).zkVersion())
                 .isEqualTo(1);
     }
 
@@ -308,7 +312,7 @@ class ClusterFeatureManagerTest {
         int epochZkVersion = startUpgradedCluster();
         registerTabletServer(0, ClusterFeatures.supportedFeatures());
         ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
-        int describedEpoch = manager.finalizedState().epoch();
+        int describedEpoch = manager.finalizedState().zkVersion();
         // the stored levels are written again after the operator described them
         zkClient.updateClusterFeatureLevels(Collections.emptyMap(), describedEpoch, epochZkVersion);
 
@@ -323,14 +327,19 @@ class ClusterFeatureManagerTest {
                                 manager.update(
                                         level(3), false, describedEpoch, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class);
-        assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
+        assertThat(ClusterFeatures.finalizedLevels(zkClient))
+                .isEqualTo(ClusterFeatureLevels.baseline());
 
         // after describing again, the raise goes through
-        int currentEpoch = manager.finalizedState().epoch();
-        assertThat(manager.update(level(3), false, currentEpoch, epochZkVersion, admitted).epoch())
+        int currentEpoch = manager.finalizedState().zkVersion();
+        assertThat(
+                        manager.update(level(3), false, currentEpoch, epochZkVersion, admitted)
+                                .zkVersion())
                 .isEqualTo(currentEpoch + 1);
         // and a retry with the old epoch succeeds, because the cluster already has those levels
-        assertThat(manager.update(level(3), false, currentEpoch, epochZkVersion, admitted).epoch())
+        assertThat(
+                        manager.update(level(3), false, currentEpoch, epochZkVersion, admitted)
+                                .zkVersion())
                 .isEqualTo(currentEpoch + 1);
     }
 
@@ -359,7 +368,8 @@ class ClusterFeatureManagerTest {
         assertThatThrownBy(() -> manager.update(level(2), false, null, epochZkVersion, admitted))
                 .isInstanceOf(InvalidClusterFeatureUpdateException.class)
                 .hasMessageContaining("Cannot lower cluster feature");
-        assertThat(manager.finalizedLevels().level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
+        assertThat(ClusterFeatures.finalizedLevels(zkClient).level(LOG_RECORD_BATCH_VERSION))
+                .isEqualTo(3);
     }
 
     @Test
@@ -373,7 +383,8 @@ class ClusterFeatureManagerTest {
         assertThatThrownBy(
                         () -> manager.update(level(3), false, null, staleEpochZkVersion, admitted))
                 .isInstanceOf(NotCoordinatorLeaderException.class);
-        assertThat(manager.finalizedLevels()).isEqualTo(ClusterFeatureLevels.baseline());
+        assertThat(ClusterFeatures.finalizedLevels(zkClient))
+                .isEqualTo(ClusterFeatureLevels.baseline());
     }
 
     @Test

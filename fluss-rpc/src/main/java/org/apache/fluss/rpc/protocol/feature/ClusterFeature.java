@@ -47,6 +47,8 @@ public enum ClusterFeature {
 
     private final String featureName;
     private final int baselineLevel;
+    // the lowest level this build supports; a later release raises it to drop the code of an old
+    // level, once every cluster is above it
     private final int minimumLevel;
     private final int latestLevel;
 
@@ -83,14 +85,6 @@ public enum ClusterFeature {
      */
     public int baselineLevel() {
         return baselineLevel;
-    }
-
-    /**
-     * The lowest level this build supports. A later release raises it to drop the code of an old
-     * level, once every cluster is above it.
-     */
-    public int minimumLevel() {
-        return minimumLevel;
     }
 
     /** The highest level this build supports. */

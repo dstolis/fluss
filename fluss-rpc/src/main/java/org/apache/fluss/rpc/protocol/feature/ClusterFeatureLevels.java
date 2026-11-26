@@ -153,6 +153,16 @@ public final class ClusterFeatureLevels {
         return new ClusterFeatureLevels(copy);
     }
 
+    /** Whether every feature is at the level of the other levels or higher. */
+    public boolean isAtLeast(ClusterFeatureLevels other) {
+        for (ClusterFeature feature : ClusterFeature.values()) {
+            if (level(feature) < other.level(feature)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** The finalized level of the given feature. */
     public int level(ClusterFeature feature) {
         return levels.get(feature);

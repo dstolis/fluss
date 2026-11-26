@@ -30,8 +30,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Optional;
 
-import static org.apache.fluss.server.zk.data.ZkData.ClusterFeaturesZNode.APPLIED_LEVELS_FILE_NAME;
-
 /**
  * The cluster feature levels a tablet server has applied, kept in each of its data directories.
  *
@@ -43,6 +41,9 @@ import static org.apache.fluss.server.zk.data.ZkData.ClusterFeaturesZNode.APPLIE
 @Internal
 public final class AppliedClusterFeatureLevelsFile {
 
+    /** The name of the file in each data directory. */
+    public static final String FILE_NAME = "cluster_feature_levels.json";
+
     private static final String TEMPORARY_SUFFIX = ".tmp";
 
     private AppliedClusterFeatureLevelsFile() {}
@@ -51,7 +52,7 @@ public final class AppliedClusterFeatureLevelsFile {
     public static Optional<ClusterFeatureLevels> read(List<File> dataDirs) throws IOException {
         ClusterFeatureLevels highest = null;
         for (File dir : dataDirs) {
-            File file = new File(dir, APPLIED_LEVELS_FILE_NAME);
+            File file = new File(dir, FILE_NAME);
             if (!file.exists()) {
                 continue;
             }
@@ -82,8 +83,8 @@ public final class AppliedClusterFeatureLevelsFile {
                 JsonSerdeUtils.writeValueAsBytes(
                         levels.toMap(), ClusterFeatureLevelsJsonSerde.INSTANCE);
         for (File dir : dataDirs) {
-            Path file = new File(dir, APPLIED_LEVELS_FILE_NAME).toPath();
-            Path temporary = new File(dir, APPLIED_LEVELS_FILE_NAME + TEMPORARY_SUFFIX).toPath();
+            Path file = new File(dir, FILE_NAME).toPath();
+            Path temporary = new File(dir, FILE_NAME + TEMPORARY_SUFFIX).toPath();
             Files.write(temporary, json);
             Files.move(
                     temporary,

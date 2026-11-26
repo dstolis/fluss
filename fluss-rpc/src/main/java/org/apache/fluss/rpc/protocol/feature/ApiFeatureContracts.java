@@ -29,7 +29,6 @@ import java.util.TreeMap;
 import java.util.function.ToIntFunction;
 
 import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
-import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkState;
 
 /**
@@ -43,9 +42,8 @@ import static org.apache.fluss.utils.Preconditions.checkState;
  *   <li>{@link Access#WRITE}: the API sends data to the server. A tablet server advertises a
  *       version only once it has applied the level that version carries, see {@link
  *       #highestAdvertisedVersion}, so a writer that negotiated the version knows the cluster
- *       finalized the level. The server checks both the version of the request and the level it has
- *       applied, see {@link #checkWrite(ApiKeys, short, ClusterFeature, int,
- *       ClusterFeatureLevels)}.
+ *       finalized the level. The server checks both the version of the request, see {@link
+ *       #maxLevel}, and the level it has applied, see {@link #checkWrite}.
  * </ul>
  *
  * <p>Writers also learn the finalized levels from the {@code ApiVersions} response, see {@link
@@ -72,16 +70,14 @@ public final class ApiFeatureContracts {
         define(ApiKeys.PRODUCE_LOG, LOG_RECORD_BATCH_VERSION, Access.WRITE)
                 .since((short) 0, LOG_RECORD_BATCH_VERSION.baselineLevel())
                 .since((short) 2, 3);
-        CONTRACTS.values().forEach(Contract::validate);
     }
 
     private ApiFeatureContracts() {}
 
     /**
      * Checks that the contracts of this build are consistent, for example that every read API has a
-     * version for the latest level of its feature. The contracts are checked when this class is
-     * loaded; servers call this at startup so that an inconsistent build fails to start instead of
-     * failing the first request that uses the contracts.
+     * version for the latest level of its feature. Servers call this at startup, so that an
+     * inconsistent build fails to start instead of serving requests with wrong contracts.
      *
      * @throws IllegalStateException if a contract is inconsistent
      */
@@ -154,35 +150,6 @@ public final class ApiFeatureContracts {
     }
 
     /**
-     * Checks that data of the given level may be written with the given version of a {@link
-     * Access#WRITE} API, on a server that has applied the given levels.
-     *
-     * @throws UnsupportedVersionException if the version cannot carry the level, or the level is
-     *     not finalized
-     */
-    public static void checkWrite(
-            ApiKeys api,
-            short apiVersion,
-            ClusterFeature feature,
-            int dataLevel,
-            ClusterFeatureLevels finalized) {
-        int versionLevel = maxLevel(api, apiVersion, feature);
-        if (dataLevel > versionLevel) {
-            throw new UnsupportedVersionException(
-                    String.format(
-                            "%s version %s carries cluster feature '%s' up to level %s, but the "
-                                    + "request contains data of level %s. Ask the server for its "
-                                    + "API versions again to negotiate a newer version.",
-                            api.name(),
-                            apiVersion,
-                            feature.featureName(),
-                            versionLevel,
-                            dataLevel));
-        }
-        checkWrite(feature, dataLevel, finalized);
-    }
-
-    /**
      * Checks that data of the given level may be written, whatever API it came through, for example
      * the Kafka protocol adapter.
      *
@@ -242,7 +209,7 @@ public final class ApiFeatureContracts {
                     feature.featureName());
             int previous = Integer.MIN_VALUE;
             for (Map.Entry<Short, Integer> entry : levelsSince.entrySet()) {
-                checkArgument(
+                checkState(
                         entry.getKey() <= api.highestSupportedVersion,
                         "%s has no version %s.",
                         api,

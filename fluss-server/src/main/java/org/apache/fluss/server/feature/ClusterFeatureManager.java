@@ -36,7 +36,6 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -146,7 +145,7 @@ public class ClusterFeatureManager {
         ClusterFeatureLevels highest = initial;
         for (Map.Entry<Integer, AppliedClusterFeatures> entry : appliedByServer.entrySet()) {
             ClusterFeatureLevels applied = ClusterFeatureLevels.fromMap(entry.getValue().levels());
-            if (!initial.max(applied).equals(initial)) {
+            if (!initial.isAtLeast(applied)) {
                 higher.put(entry.getKey(), applied);
                 highest = highest.max(applied);
             }
@@ -162,21 +161,17 @@ public class ClusterFeatureManager {
                             ZkData.ClusterFeaturesZNode.path(),
                             higher,
                             initial,
-                            new String(
-                                    ZkData.ClusterFeaturesZNode.encode(highest.toMap()),
-                                    StandardCharsets.UTF_8)));
+                            ZkData.ClusterFeaturesZNode.toJson(highest)));
         }
     }
 
-    /** The finalized level of every feature. */
-    public ClusterFeatureLevels finalizedLevels() throws Exception {
-        return ClusterFeatures.finalizedLevels(zkClient);
-    }
-
-    /** The finalized level of every feature, with the feature epoch they were read at. */
-    public FinalizedState finalizedState() throws Exception {
+    /**
+     * The finalized level of every feature, with the feature epoch they were read at, which goes up
+     * by one with every raise.
+     */
+    public VersionedData<ClusterFeatureLevels> finalizedState() throws Exception {
         VersionedData<Map<String, Integer>> stored = storedLevels();
-        return new FinalizedState(ClusterFeatureLevels.fromMap(stored.data()), stored.zkVersion());
+        return new VersionedData<>(ClusterFeatureLevels.fromMap(stored.data()), stored.zkVersion());
     }
 
     /**
@@ -218,7 +213,7 @@ public class ClusterFeatureManager {
      * @throws NotCoordinatorLeaderException if this coordinator lost leadership, in which case
      *     nothing was changed
      */
-    public FinalizedState update(
+    public VersionedData<ClusterFeatureLevels> update(
             Map<String, Integer> requestedLevels,
             boolean validateOnly,
             @Nullable Integer expectedEpoch,
@@ -256,7 +251,7 @@ public class ClusterFeatureManager {
             updated = updated.with(feature, level);
         }
         if (updated.equals(current)) {
-            return new FinalizedState(current, epoch);
+            return new VersionedData<>(current, epoch);
         }
         if (expectedEpoch != null && expectedEpoch != epoch) {
             throw new InvalidClusterFeatureUpdateException(
@@ -269,7 +264,7 @@ public class ClusterFeatureManager {
 
         checkEveryServerSupports(current, updated, admittedTabletServers);
         if (validateOnly) {
-            return new FinalizedState(updated, epoch);
+            return new VersionedData<>(updated, epoch);
         }
         try {
             zkClient.updateClusterFeatureLevels(updated.toMap(), epoch, coordinatorEpochZkVersion);
@@ -284,7 +279,7 @@ public class ClusterFeatureManager {
                 updated,
                 epoch + 1);
         // a successful conditional write moves the node to the next version
-        return new FinalizedState(updated, epoch + 1);
+        return new VersionedData<>(updated, epoch + 1);
     }
 
     private VersionedData<Map<String, Integer>> storedLevels() throws Exception {
@@ -371,27 +366,5 @@ public class ClusterFeatureManager {
                     "coordinator " + coordinator.getId(), coordinator.getSupportedFeatures());
         }
         return serverFeatures;
-    }
-
-    /** The finalized level of every feature, with the feature epoch of the stored levels. */
-    public static final class FinalizedState {
-
-        private final ClusterFeatureLevels levels;
-        private final int epoch;
-
-        public FinalizedState(ClusterFeatureLevels levels, int epoch) {
-            this.levels = levels;
-            this.epoch = epoch;
-        }
-
-        /** The finalized levels. */
-        public ClusterFeatureLevels levels() {
-            return levels;
-        }
-
-        /** The feature epoch, which goes up by one with every raise. */
-        public int epoch() {
-            return epoch;
-        }
     }
 }

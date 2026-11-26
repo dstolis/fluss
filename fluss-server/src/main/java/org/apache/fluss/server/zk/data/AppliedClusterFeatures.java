@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.zk.data;
 
+import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
+import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.fluss.utils.json.JsonDeserializer;
@@ -25,7 +27,6 @@ import org.apache.fluss.utils.json.JsonSerializer;
 
 import java.io.IOException;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
@@ -44,6 +45,15 @@ public final class AppliedClusterFeatures {
     public AppliedClusterFeatures(int epoch, Map<String, Integer> levels) {
         this.epoch = epoch;
         this.levels = Collections.unmodifiableMap(new TreeMap<>(levels));
+    }
+
+    /** The given applied levels, listing every feature, also those at their baseline. */
+    public static AppliedClusterFeatures of(int epoch, ClusterFeatureLevels levels) {
+        Map<String, Integer> levelsByName = new TreeMap<>();
+        for (ClusterFeature feature : ClusterFeature.values()) {
+            levelsByName.put(feature.featureName(), levels.level(feature));
+        }
+        return new AppliedClusterFeatures(epoch, levelsByName);
     }
 
     /** The feature epoch of the applied levels, or -1 if the cluster has stored no levels yet. */
@@ -95,7 +105,6 @@ public final class AppliedClusterFeatures {
 
         private static final String VERSION_KEY = "version";
         private static final String EPOCH = "epoch";
-        private static final String LEVELS = "levels";
         private static final int VERSION = 1;
 
         @Override
@@ -104,23 +113,14 @@ public final class AppliedClusterFeatures {
             generator.writeStartObject();
             generator.writeNumberField(VERSION_KEY, VERSION);
             generator.writeNumberField(EPOCH, applied.epoch);
-            generator.writeObjectFieldStart(LEVELS);
-            for (Map.Entry<String, Integer> level : applied.levels.entrySet()) {
-                generator.writeNumberField(level.getKey(), level.getValue());
-            }
-            generator.writeEndObject();
+            ClusterFeatureLevelsJsonSerde.writeLevelsField(applied.levels, generator);
             generator.writeEndObject();
         }
 
         @Override
         public AppliedClusterFeatures deserialize(JsonNode node) {
-            Map<String, Integer> levels = new TreeMap<>();
-            Iterator<Map.Entry<String, JsonNode>> fields = node.get(LEVELS).fields();
-            while (fields.hasNext()) {
-                Map.Entry<String, JsonNode> field = fields.next();
-                levels.put(field.getKey(), field.getValue().asInt());
-            }
-            return new AppliedClusterFeatures(node.get(EPOCH).asInt(), levels);
+            return new AppliedClusterFeatures(
+                    node.get(EPOCH).asInt(), ClusterFeatureLevelsJsonSerde.readLevelsField(node));
         }
     }
 }

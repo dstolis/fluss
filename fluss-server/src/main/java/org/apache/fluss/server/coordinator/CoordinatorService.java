@@ -206,6 +206,7 @@ import org.apache.fluss.server.metadata.SystemTables;
 import org.apache.fluss.server.utils.ServerRpcMessageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperClient.TableBucketAndManifest;
+import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
 import org.apache.fluss.server.zk.data.AppliedClusterFeatures;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
@@ -1897,15 +1898,15 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         ctx -> {
                             try {
                                 ClusterFeatureManager manager = new ClusterFeatureManager(zkClient);
-                                ClusterFeatureManager.FinalizedState state =
+                                VersionedData<ClusterFeatureLevels> state =
                                         manager.finalizedState();
-                                ClusterFeatureLevels finalized = state.levels();
+                                ClusterFeatureLevels finalized = state.data();
                                 ClusterFeatureLevels supported =
                                         manager.supportedLevels(
                                                 ctx.liveOrShuttingDownTabletServers());
                                 DescribeClusterFeaturesResponse response =
                                         new DescribeClusterFeaturesResponse()
-                                                .setFeatureEpoch(state.epoch());
+                                                .setFeatureEpoch(state.zkVersion());
                                 for (ClusterFeature feature : ClusterFeature.values()) {
                                     response.addFeature()
                                             .setName(feature.featureName())
@@ -1970,7 +1971,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 new AccessContextEvent<>(
                         ctx -> {
                             try {
-                                ClusterFeatureManager.FinalizedState state =
+                                VersionedData<ClusterFeatureLevels> state =
                                         new ClusterFeatureManager(zkClient)
                                                 .update(
                                                         requestedLevels,
@@ -1979,11 +1980,10 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                                                         ctx.getCoordinatorZkVersion(),
                                                         ctx.liveOrShuttingDownTabletServers());
                                 if (!validateOnly) {
-                                    eventManager.put(
-                                            new ClusterFeaturesChangedEvent(state.levels()));
+                                    eventManager.put(new ClusterFeaturesChangedEvent());
                                 }
                                 return new UpdateClusterFeaturesResponse()
-                                        .setFeatureEpoch(state.epoch());
+                                        .setFeatureEpoch(state.zkVersion());
                             } catch (ApiException e) {
                                 throw e;
                             } catch (Exception e) {

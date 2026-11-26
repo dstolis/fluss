@@ -17,28 +17,17 @@
 
 package org.apache.fluss.server.coordinator.event;
 
-import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
-
 /**
- * An event for a change of the finalized cluster feature levels, raised on the coordinator when it
- * applies the change. It runs on the coordinator's event thread, like the registration of tablet
- * servers, so a tablet server that registers while the level is raised is either seen by the check
- * before the raise or handled by this event.
+ * An event for a change of the finalized cluster feature levels, raised on the coordinator after it
+ * stored the change. It makes the coordinator check the live tablet servers against the stored
+ * levels again. It runs on the coordinator's event thread, like the registration of tablet servers,
+ * so a tablet server that registers while the level is raised is either seen by the check before
+ * the raise or handled by this event.
  */
 public class ClusterFeaturesChangedEvent implements CoordinatorEvent {
 
-    private final ClusterFeatureLevels levels;
-
-    public ClusterFeaturesChangedEvent(ClusterFeatureLevels levels) {
-        this.levels = levels;
-    }
-
-    public ClusterFeatureLevels getLevels() {
-        return levels;
-    }
-
     @Override
     public String toString() {
-        return "ClusterFeaturesChangedEvent{levels=" + levels + '}';
+        return "ClusterFeaturesChangedEvent";
     }
 }

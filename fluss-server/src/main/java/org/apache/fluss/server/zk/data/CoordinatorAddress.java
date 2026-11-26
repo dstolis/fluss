@@ -34,7 +34,7 @@ import java.util.TreeMap;
 public class CoordinatorAddress {
     private final String id;
     private final List<Endpoint> endpoints;
-    // cluster feature name -> highest level this coordinator supports
+    // cluster feature name -> range of levels this coordinator supports
     private final Map<String, SupportedLevelRange> supportedFeatures;
 
     public CoordinatorAddress(String id, List<Endpoint> endpoints) {

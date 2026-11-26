@@ -107,41 +107,6 @@ class ApiFeatureContractsTest {
     }
 
     @Test
-    void testCheckWriteWithVersion() {
-        assertThatCode(
-                        () ->
-                                ApiFeatureContracts.checkWrite(
-                                        ApiKeys.PRODUCE_LOG,
-                                        (short) 2,
-                                        LOG_RECORD_BATCH_VERSION,
-                                        3,
-                                        V3))
-                .doesNotThrowAnyException();
-        // the version cannot carry the level, even though the cluster finalized it
-        assertThatThrownBy(
-                        () ->
-                                ApiFeatureContracts.checkWrite(
-                                        ApiKeys.PRODUCE_LOG,
-                                        (short) 1,
-                                        LOG_RECORD_BATCH_VERSION,
-                                        3,
-                                        V3))
-                .isInstanceOf(UnsupportedVersionException.class)
-                .hasMessageContaining("PRODUCE_LOG version 1 carries cluster feature");
-        // the version can carry the level, but the cluster has not finalized it
-        assertThatThrownBy(
-                        () ->
-                                ApiFeatureContracts.checkWrite(
-                                        ApiKeys.PRODUCE_LOG,
-                                        (short) 2,
-                                        LOG_RECORD_BATCH_VERSION,
-                                        3,
-                                        BASELINE))
-                .isInstanceOf(UnsupportedVersionException.class)
-                .hasMessageContaining("the cluster has finalized level 2");
-    }
-
-    @Test
     void testCheckWrite() {
         assertThatCode(() -> ApiFeatureContracts.checkWrite(LOG_RECORD_BATCH_VERSION, 3, V3))
                 .doesNotThrowAnyException();
@@ -173,6 +138,14 @@ class ApiFeatureContractsTest {
         assertThat(V3.level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
         // a copy with a new level leaves the original unchanged
         assertThat(BASELINE.level(LOG_RECORD_BATCH_VERSION)).isEqualTo(2);
+    }
+
+    @Test
+    void testIsAtLeast() {
+        assertThat(V3.isAtLeast(BASELINE)).isTrue();
+        assertThat(V3.isAtLeast(V3)).isTrue();
+        assertThat(BASELINE.isAtLeast(BASELINE)).isTrue();
+        assertThat(BASELINE.isAtLeast(V3)).isFalse();
     }
 
     @Test
@@ -222,6 +195,11 @@ class ApiFeatureContractsTest {
 
     private static PbClusterFeatureLevel reported(String name, int level) {
         return new PbClusterFeatureLevel().setName(name).setLevel(level);
+    }
+
+    @Test
+    void testContractsOfThisBuildAreValid() {
+        assertThatCode(ApiFeatureContracts::validate).doesNotThrowAnyException();
     }
 
     @Test

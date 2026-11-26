@@ -108,7 +108,6 @@ import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.FetchLogReadPreference;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
-import org.apache.fluss.rpc.protocol.feature.ClusterFeature;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
@@ -289,9 +288,10 @@ public final class TabletService extends RpcServiceBase
      * record batches of magic V3. Writers learn from either when they may use a level. Clients ask
      * for the API versions when they open a connection, or again when they need a newer version.
      *
-     * <p>If a level is not applied yet, the stored levels are read again first, at most once per
-     * {@link FinalizedClusterFeatures#REFRESH_INTERVAL_MS}, so a client asking right after a raise
-     * is not answered with the old level.
+     * <p>While a level is below the latest one this build supports, the stored levels are also read
+     * again in the background, at most once per {@link
+     * FinalizedClusterFeatures#REFRESH_INTERVAL_MS}. This request is answered with the applied
+     * levels, a later one sees a raise the watch has not applied yet.
      */
     @Override
     public CompletableFuture<ApiVersionsResponse> apiVersions(ApiVersionsRequest request) {
@@ -300,9 +300,7 @@ public final class TabletService extends RpcServiceBase
                         response -> {
                             FinalizedClusterFeatures clusterFeatures =
                                     replicaManager.getClusterFeatures();
-                            for (ClusterFeature feature : ClusterFeature.values()) {
-                                clusterFeatures.isFinalizedAtLeast(feature, feature.latestLevel());
-                            }
+                            clusterFeatures.refreshIfBelowLatest();
                             ClusterFeatureLevels applied = clusterFeatures.levels();
                             for (PbApiVersion apiVersion : response.getApiVersionsList()) {
                                 ApiKeys api = ApiKeys.forId(apiVersion.getApiKey());
@@ -485,9 +483,7 @@ public final class TabletService extends RpcServiceBase
 
     /** The highest log record batch level the given version of a read API can return as stored. */
     private static int readableBatchLevel(ApiKeys api, short apiVersion) {
-        return Math.min(
-                ApiFeatureContracts.maxLevel(api, apiVersion, LOG_RECORD_BATCH_VERSION),
-                Byte.MAX_VALUE);
+        return ApiFeatureContracts.maxLevel(api, apiVersion, LOG_RECORD_BATCH_VERSION);
     }
 
     /** Converts the log record batches of a limit scan the reader's version cannot read. */

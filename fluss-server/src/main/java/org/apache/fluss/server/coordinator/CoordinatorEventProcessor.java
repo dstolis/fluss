@@ -189,12 +189,6 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
     private static final Logger LOG = LoggerFactory.getLogger(CoordinatorEventProcessor.class);
 
     private final ZooKeeperClient zooKeeperClient;
-    // the static config, which the cluster configs in ZooKeeper override
-    private final Configuration conf;
-
-    // the newest feature levels this coordinator applied, which can be ahead of ZooKeeper because
-    // a level change is applied before it is saved
-    private ClusterFeatureLevels appliedFeatureLevels = ClusterFeatureLevels.baseline();
     private final ExecutorService ioExecutor;
     private final CoordinatorContext coordinatorContext;
     private final ReplicaCapacityController replicaCapacityController;
@@ -240,7 +234,6 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
             Scheduler scheduler,
             Clock clock) {
         this.zooKeeperClient = zooKeeperClient;
-        this.conf = conf;
         this.serverMetadataCache = serverMetadataCache;
         this.coordinatorChannelManager = coordinatorChannelManager;
         this.coordinatorContext = coordinatorContext;
@@ -769,7 +762,7 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
         } else if (event instanceof DeadTabletServerEvent) {
             processDeadTabletServer((DeadTabletServerEvent) event);
         } else if (event instanceof ClusterFeaturesChangedEvent) {
-            processClusterFeaturesChanged((ClusterFeaturesChangedEvent) event);
+            processClusterFeaturesChanged();
         } else if (event instanceof AdjustIsrReceivedEvent) {
             AdjustIsrReceivedEvent adjustIsrReceivedEvent = (AdjustIsrReceivedEvent) event;
             CompletableFuture<AdjustIsrResponse> callback =
@@ -1513,19 +1506,18 @@ public class CoordinatorEventProcessor implements EventProcessor, RebalanceExecu
 
     private ClusterFeatureLevels finalizedFeatures() {
         try {
-            return ClusterFeatures.finalizedLevels(zooKeeperClient).max(appliedFeatureLevels);
+            return ClusterFeatures.finalizedLevels(zooKeeperClient);
         } catch (Exception e) {
             throw new FlussRuntimeException("Failed to read the finalized cluster features.", e);
         }
     }
 
     /**
-     * Removes every live tablet server that doesn't support the new levels, as if it had died. A
-     * server can register after the coordinator checked the registrations for a raise and before
-     * the raise was applied, so it is live without supporting the new level.
+     * Removes every live tablet server that doesn't support the finalized levels, as if it had
+     * died. A server can register after the coordinator checked the registrations for a raise and
+     * before the raise was stored, so it is live without supporting the new level.
      */
-    private void processClusterFeaturesChanged(ClusterFeaturesChangedEvent event) {
-        appliedFeatureLevels = appliedFeatureLevels.max(event.getLevels());
+    private void processClusterFeaturesChanged() {
         ClusterFeatureLevels finalized = finalizedFeatures();
         Set<Integer> liveServers = new HashSet<>(coordinatorContext.liveTabletServerSet());
         Map<Integer, TabletServerRegistration> registrations;

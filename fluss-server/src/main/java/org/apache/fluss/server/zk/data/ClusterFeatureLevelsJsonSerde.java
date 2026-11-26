@@ -45,16 +45,27 @@ public class ClusterFeatureLevelsJsonSerde
     public void serialize(Map<String, Integer> levels, JsonGenerator generator) throws IOException {
         generator.writeStartObject();
         generator.writeNumberField(VERSION_KEY, VERSION);
-        generator.writeObjectFieldStart(LEVELS);
-        for (Map.Entry<String, Integer> level : new TreeMap<>(levels).entrySet()) {
-            generator.writeNumberField(level.getKey(), level.getValue());
-        }
-        generator.writeEndObject();
+        writeLevelsField(levels, generator);
         generator.writeEndObject();
     }
 
     @Override
     public Map<String, Integer> deserialize(JsonNode node) {
+        return readLevelsField(node);
+    }
+
+    /** Writes the levels as the {@code levels} field of the object being written. */
+    static void writeLevelsField(Map<String, Integer> levels, JsonGenerator generator)
+            throws IOException {
+        generator.writeObjectFieldStart(LEVELS);
+        for (Map.Entry<String, Integer> level : new TreeMap<>(levels).entrySet()) {
+            generator.writeNumberField(level.getKey(), level.getValue());
+        }
+        generator.writeEndObject();
+    }
+
+    /** Reads the {@code levels} field of the given object. */
+    static Map<String, Integer> readLevelsField(JsonNode node) {
         JsonNode levelsNode = node.get(LEVELS);
         if (levelsNode == null || !levelsNode.isObject()) {
             throw new IllegalArgumentException("no \"" + LEVELS + "\" object");

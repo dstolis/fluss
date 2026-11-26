@@ -124,15 +124,12 @@ public class RemoteLogCompatCopies implements Closeable {
         this.clock = clock;
     }
 
-    /** The segment id of the copy of a segment. */
-    public static UUID copyId(UUID segmentId) {
-        return FlussPaths.remoteLogSegmentCopyId(segmentId);
-    }
-
     /** The file of the copy of a segment whose files are in {@code segmentDir}. */
     public static FsPath copyFile(FsPath segmentDir, RemoteLogSegment segment) {
         return remoteLogSegmentFile(
-                remoteLogSegmentDir(segmentDir, copyId(segment.remoteLogSegmentId())),
+                remoteLogSegmentDir(
+                        segmentDir,
+                        FlussPaths.remoteLogSegmentCopyId(segment.remoteLogSegmentId())),
                 segment.remoteLogStartOffset());
     }
 
@@ -269,7 +266,7 @@ public class RemoteLogCompatCopies implements Closeable {
 
     private static RemoteLogSegment copySegment(RemoteLogSegment segment, int copySize) {
         return RemoteLogSegment.Builder.builder()
-                .remoteLogSegmentId(copyId(segment.remoteLogSegmentId()))
+                .remoteLogSegmentId(FlussPaths.remoteLogSegmentCopyId(segment.remoteLogSegmentId()))
                 .remoteLogStartOffset(segment.remoteLogStartOffset())
                 .remoteLogEndOffset(segment.remoteLogEndOffset())
                 .logicalStartOffset(segment.logicalStartOffset())

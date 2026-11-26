@@ -40,10 +40,6 @@ public final class ClusterFeaturesDescription {
     private final Collection<ClusterFeatureDescription> features;
     private final Collection<TabletServerFeatureProgress> tabletServers;
 
-    public ClusterFeaturesDescription(int epoch, Collection<ClusterFeatureDescription> features) {
-        this(epoch, features, Collections.emptyList());
-    }
-
     public ClusterFeaturesDescription(
             int epoch,
             Collection<ClusterFeatureDescription> features,

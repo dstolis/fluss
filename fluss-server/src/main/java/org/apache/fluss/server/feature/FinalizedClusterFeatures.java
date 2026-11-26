@@ -136,14 +136,24 @@ public class FinalizedClusterFeatures {
     /**
      * Whether the given feature is finalized at the given level or higher, as applied. If the
      * applied level is lower, a read of the stored levels is started in the background, see {@link
-     * #refresh}; it doesn't change this answer unless the read finished on the calling thread.
+     * #refresh}, so a later call sees a raise the watch has not applied yet.
      */
     public boolean isFinalizedAtLeast(ClusterFeature feature, int level) {
         if (levels.level(feature) >= level) {
             return true;
         }
         refresh();
-        return levels.level(feature) >= level;
+        return false;
+    }
+
+    /**
+     * Starts a read of the stored levels in the background, see {@link #refresh}, unless every
+     * feature is applied at the latest level this build supports.
+     */
+    public void refreshIfBelowLatest() {
+        if (!levels.isAtLeast(ClusterFeatureLevels.latest())) {
+            refresh();
+        }
     }
 
     /**
@@ -163,19 +173,6 @@ public class FinalizedClusterFeatures {
             // every format this version can store is finalized
             return null;
         }
-        UnsupportedVersionException unsupported = findUnfinalizedBatch(records);
-        if (unsupported == null) {
-            return null;
-        }
-        // the level may have been raised without this server having applied it yet: read it again
-        // in the background, the writer retries the rejected batches
-        refresh();
-        unsupported = findUnfinalizedBatch(records);
-        return unsupported == null ? null : ApiError.fromThrowable(unsupported);
-    }
-
-    @Nullable
-    private UnsupportedVersionException findUnfinalizedBatch(LogRecords records) {
         ClusterFeatureLevels applied = levels;
         try {
             for (LogRecordBatch batch : records.batches()) {
@@ -183,7 +180,10 @@ public class FinalizedClusterFeatures {
             }
             return null;
         } catch (UnsupportedVersionException e) {
-            return e;
+            // the level may have been raised without this server having applied it yet: read it
+            // again in the background, the writer retries the rejected batches
+            refresh();
+            return ApiError.fromThrowable(e);
         }
     }
 
@@ -225,20 +225,32 @@ public class FinalizedClusterFeatures {
             if (!stored.isPresent()) {
                 return;
             }
-            List<String> unsupported = ClusterFeatures.unsupportedByThisBuild(stored.get().data());
+            List<String> unsupported = applyStored(stored.get().data(), stored.get().zkVersion());
             if (!unsupported.isEmpty()) {
                 LOG.warn(
                         "The stored cluster feature levels contain {}, which this tablet server "
                                 + "does not support, so they are not applied.",
                         unsupported);
-                return;
             }
-            apply(ClusterFeatureLevels.fromMap(stored.get().data()), stored.get().zkVersion());
         } catch (Exception e) {
             LOG.warn("Failed to read the stored cluster feature levels.", e);
         } finally {
             refreshing.set(false);
         }
+    }
+
+    /**
+     * Applies the levels stored for the cluster at the given feature epoch, unless this build does
+     * not support all of them, see {@link ClusterFeatures#unsupportedByThisBuild}.
+     *
+     * @return the stored levels this build does not support, empty if the levels were applied
+     */
+    public List<String> applyStored(Map<String, Integer> storedLevels, int storedEpoch) {
+        List<String> unsupported = ClusterFeatures.unsupportedByThisBuild(storedLevels);
+        if (unsupported.isEmpty()) {
+            apply(ClusterFeatureLevels.fromMap(storedLevels), storedEpoch);
+        }
+        return unsupported;
     }
 
     /**
@@ -269,14 +281,14 @@ public class FinalizedClusterFeatures {
     }
 
     private void applyLevels(ClusterFeatureLevels finalized) {
-        ClusterFeatureLevels raised = levels.max(finalized);
-        if (!raised.equals(finalized)) {
+        if (!finalized.isAtLeast(levels)) {
             LOG.error(
                     "Ignoring finalized cluster feature levels {} that are below the applied "
                             + "levels {}. Levels must never be lowered.",
                     finalized,
                     levels);
         }
+        ClusterFeatureLevels raised = levels.max(finalized);
         if (!raised.equals(levels)) {
             LOG.info("Applying the finalized cluster feature levels {}.", raised);
             levels = raised;

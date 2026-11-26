@@ -25,6 +25,7 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.security.acl.Resource;
 import org.apache.fluss.security.acl.ResourceType;
+import org.apache.fluss.server.feature.AppliedClusterFeatureLevelsFile;
 import org.apache.fluss.server.zk.data.lake.LakeTable;
 import org.apache.fluss.server.zk.data.lake.LakeTableJsonSerde;
 import org.apache.fluss.server.zk.data.lease.KvSnapshotLeaseMetadata;
@@ -913,15 +914,17 @@ public final class ZkData {
      */
     public static final class ClusterFeaturesZNode {
 
-        /** The file a tablet server keeps the levels it applied in, in each of its data dirs. */
-        public static final String APPLIED_LEVELS_FILE_NAME = "cluster_feature_levels.json";
-
         public static String path() {
             return "/cluster/features";
         }
 
         public static byte[] encode(Map<String, Integer> levels) {
             return JsonSerdeUtils.writeValueAsBytes(levels, ClusterFeatureLevelsJsonSerde.INSTANCE);
+        }
+
+        /** The content of the node for the given levels, as an operator would set it. */
+        public static String toJson(ClusterFeatureLevels levels) {
+            return new String(encode(levels.toMap()), StandardCharsets.UTF_8);
         }
 
         /**
@@ -944,10 +947,8 @@ public final class ZkData {
                                         + "repair.",
                                 path(),
                                 e.getMessage(),
-                                new String(
-                                        encode(ClusterFeatureLevels.latest().toMap()),
-                                        StandardCharsets.UTF_8),
-                                APPLIED_LEVELS_FILE_NAME));
+                                toJson(ClusterFeatureLevels.latest()),
+                                AppliedClusterFeatureLevelsFile.FILE_NAME));
             }
         }
     }

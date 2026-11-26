@@ -135,8 +135,6 @@ public class CoordinatorServer extends ServerBase {
     @GuardedBy("lock")
     private CoordinatorEventProcessor coordinatorEventProcessor;
 
-    // checks cluster feature level changes and reports applied changes to the event processor
-
     @GuardedBy("lock")
     private ZooKeeperClient zkClient;
 

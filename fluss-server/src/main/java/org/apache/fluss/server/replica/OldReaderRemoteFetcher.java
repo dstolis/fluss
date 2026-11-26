@@ -107,22 +107,22 @@ class OldReaderRemoteFetcher implements Closeable {
         }
         RemoteLogSegment segment = remoteInfo.remoteLogSegmentList().get(0);
         FsPath remoteLogDir = FlussPaths.remoteLogDir(replica.getRemoteDataDir());
-        if (readerMaxMagic == RemoteLogCompatCopies.COPY_READER_MAX_MAGIC) {
-            RemoteLogFetchInfo copy =
-                    compatCopies.copyFetchInfo(
-                            remoteLogDir,
-                            remoteInfo.partitionName(),
-                            segment,
-                            remoteLogManager.getRemoteLogStorage());
-            if (copy != null) {
-                LOG.debug(
-                        "Handing out the copy of remote log segment {} of {} to a reader of "
-                                + "batch magic up to {}.",
-                        segment.remoteLogSegmentId(),
-                        tb,
-                        readerMaxMagic);
-                return FetchLogResultForBucket.remote(tb, copy, result.getHighWatermark());
-            }
+        // every reader reads the copy: the contracts start every read API at the baseline level,
+        // which is the batch magic of the copy
+        RemoteLogFetchInfo copy =
+                compatCopies.copyFetchInfo(
+                        remoteLogDir,
+                        remoteInfo.partitionName(),
+                        segment,
+                        remoteLogManager.getRemoteLogStorage());
+        if (copy != null) {
+            LOG.debug(
+                    "Handing out the copy of remote log segment {} of {} to a reader of batch "
+                            + "magic up to {}.",
+                    segment.remoteLogSegmentId(),
+                    tb,
+                    readerMaxMagic);
+            return FetchLogResultForBucket.remote(tb, copy, result.getHighWatermark());
         }
         LOG.debug(
                 "Converting remote log segment {} of {} with batch magic up to {} inline for a "

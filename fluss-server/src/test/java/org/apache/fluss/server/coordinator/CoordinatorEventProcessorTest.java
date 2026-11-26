@@ -460,13 +460,13 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
                             assertThat(ctx.liveTabletServerSet())
                                     .contains(oldServerId, newServerId));
 
-            // the coordinator tells its event thread about every raise
-            eventProcessor
-                    .getCoordinatorEventManager()
-                    .put(
-                            new ClusterFeaturesChangedEvent(
-                                    ClusterFeatureLevels.baseline()
-                                            .with(ClusterFeature.LOG_RECORD_BATCH_VERSION, 3)));
+            // the coordinator stores a raise, then tells its event thread about it
+            zookeeperClient.createClusterFeatureLevels(
+                    ClusterFeatureLevels.baseline()
+                            .with(ClusterFeature.LOG_RECORD_BATCH_VERSION, 3)
+                            .toMap(),
+                    ZkVersion.MATCH_ANY_VERSION.getVersion());
+            eventProcessor.getCoordinatorEventManager().put(new ClusterFeaturesChangedEvent());
 
             // the old server is removed, the new one stays
             retryVerifyContext(
@@ -475,8 +475,7 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
                         assertThat(ctx.liveTabletServerSet()).contains(newServerId);
                     });
 
-            // and an old server registering now is kept out, also when the raised level is not
-            // read back from ZooKeeper
+            // and an old server registering now is kept out
             int laterServerId = 9;
             client.registerTabletServer(
                     laterServerId, tabletServerRegistration(laterServerId, Collections.emptyMap()));
@@ -488,6 +487,8 @@ class CoordinatorEventProcessorTest extends CoordinatorEventProcessorTestBase {
                     ctx -> assertThat(ctx.liveTabletServerSet()).contains(checkServerId));
             retryVerifyContext(
                     ctx -> assertThat(ctx.liveTabletServerSet()).doesNotContain(laterServerId));
+        } finally {
+            zookeeperClient.getCuratorClient().delete().forPath(ZkData.ClusterFeaturesZNode.path());
         }
     }
 

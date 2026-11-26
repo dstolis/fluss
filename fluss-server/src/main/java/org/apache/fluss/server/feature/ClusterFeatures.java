@@ -18,7 +18,6 @@
 package org.apache.fluss.server.feature;
 
 import org.apache.fluss.annotation.Internal;
-import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.exception.UnreadableClusterFeatureLevelsException;
 import org.apache.fluss.rpc.protocol.feature.ApiFeatureContracts;
@@ -33,7 +32,6 @@ import org.apache.fluss.utils.function.SupplierWithException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -119,10 +117,10 @@ public final class ClusterFeatures {
     }
 
     /**
-     * Fails if the cluster has finalized a feature level this server does not support, for example
-     * when a server of an older version starts after the cluster enabled a newer log record batch
-     * format. The server could not read the data written at that level, so it must not start and
-     * join the cluster. Also fails if the feature contracts of this build are inconsistent.
+     * Fails if the cluster has finalized a feature level this coordinator does not support, or if
+     * the feature contracts of this build are inconsistent, see {@link #checkSupportedByThisBuild}.
+     * Stored levels that can't be read don't fail this check. A tablet server checks the stored
+     * levels in {@link #levelsToStartWith} instead.
      */
     public static void checkSupportsFinalizedFeatures(ZooKeeperClient zkClient) throws Exception {
         checkContracts();
@@ -130,13 +128,21 @@ public final class ClusterFeatures {
         try {
             stored = zkClient.getClusterFeatureLevels();
         } catch (UnreadableClusterFeatureLevelsException e) {
-            // decided by levelsToStartWith, which knows the levels this server applied before
             return;
         }
-        if (!stored.isPresent()) {
-            return;
+        if (stored.isPresent()) {
+            checkSupportedByThisBuild(stored.get().data());
         }
-        List<String> unsupported = unsupportedByThisBuild(stored.get().data());
+    }
+
+    /**
+     * Fails if the stored levels contain a level this server does not support, for example when a
+     * server of an older version starts after the cluster enabled a newer log record batch format.
+     * The server could not read the data written at that level, so it must not start and join the
+     * cluster.
+     */
+    private static void checkSupportedByThisBuild(Map<String, Integer> storedLevels) {
+        List<String> unsupported = unsupportedByThisBuild(storedLevels);
         if (!unsupported.isEmpty()) {
             throw new IllegalConfigurationException(
                     String.format(
@@ -148,27 +154,24 @@ public final class ClusterFeatures {
 
     /**
      * Fails if the feature contracts of this build are inconsistent, so that such a build does not
-     * start. Otherwise it would fail every request that uses the contracts, see {@link
-     * ApiFeatureContracts#validate}.
+     * start, see {@link ApiFeatureContracts#validate}.
      */
-    @VisibleForTesting
-    static void checkContracts() {
+    public static void checkContracts() {
         try {
             ApiFeatureContracts.validate();
-        } catch (ExceptionInInitializerError | NoClassDefFoundError | IllegalStateException e) {
-            Throwable cause = e instanceof ExceptionInInitializerError ? e.getCause() : e;
+        } catch (IllegalStateException e) {
             throw new IllegalStateException(
-                    "The cluster feature contracts of this build are invalid: "
-                            + (cause == null ? e : cause.getMessage()),
-                    cause == null ? e : cause);
+                    "The cluster feature contracts of this build are invalid: " + e.getMessage(),
+                    e);
         }
     }
 
     /**
      * The levels a tablet server starts with, with their feature epoch: the stored levels, unless
-     * they would lower a level the server applied before. Data written at that level may be on its
-     * disks, so the server refuses to start and tells the operator to restore the stored levels,
-     * which can only go down if their ZooKeeper node was lost, rolled back or edited by hand.
+     * this server does not support them, or they would lower a level the server applied before.
+     * Data written at that level may be on its disks, so the server refuses to start and tells the
+     * operator to restore the stored levels, which can only go down if their ZooKeeper node was
+     * lost, rolled back or edited by hand.
      *
      * <p>If the stored levels can't be read, a server that applied levels before starts with those,
      * so a rolling restart does not turn into an outage while the node is repaired.
@@ -194,12 +197,15 @@ public final class ClusterFeatures {
                     appliedBefore.get());
             return new VersionedData<>(appliedBefore.get(), FinalizedClusterFeatures.NO_EPOCH);
         }
+        if (stored.isPresent()) {
+            checkSupportedByThisBuild(stored.get().data());
+        }
         ClusterFeatureLevels before = appliedBefore.orElse(ClusterFeatureLevels.baseline());
         ClusterFeatureLevels current =
                 stored.isPresent()
                         ? ClusterFeatureLevels.fromMap(stored.get().data())
                         : ClusterFeatureLevels.baseline();
-        if (!current.max(before).equals(current)) {
+        if (!current.isAtLeast(before)) {
             throw new IllegalStateException(
                     String.format(
                             "This tablet server applied the cluster feature levels %s before, but "
@@ -210,9 +216,7 @@ public final class ClusterFeatures {
                             before,
                             ZkData.ClusterFeaturesZNode.path(),
                             stored.isPresent() ? current : "missing",
-                            new String(
-                                    ZkData.ClusterFeaturesZNode.encode(before.toMap()),
-                                    StandardCharsets.UTF_8)));
+                            ZkData.ClusterFeaturesZNode.toJson(before)));
         }
         return new VersionedData<>(
                 current,

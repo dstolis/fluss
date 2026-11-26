@@ -28,7 +28,7 @@ import java.util.Objects;
 public class NewTabletServerEvent implements CoordinatorEvent {
 
     private final ServerInfo serverInfo;
-    // the cluster features the server registered, mapped to the highest supported level
+    // the cluster features the server registered, mapped to the range of supported levels
     private final Map<String, SupportedLevelRange> supportedFeatures;
 
     public NewTabletServerEvent(ServerInfo serverInfo) {
@@ -45,7 +45,7 @@ public class NewTabletServerEvent implements CoordinatorEvent {
         return serverInfo;
     }
 
-    /** The cluster features the server registered, mapped to the highest supported level. */
+    /** The cluster features the server registered, mapped to the range of supported levels. */
     public Map<String, SupportedLevelRange> getSupportedFeatures() {
         return supportedFeatures;
     }

@@ -17,6 +17,7 @@
 
 package org.apache.fluss.server.feature;
 
+import org.apache.fluss.exception.IllegalConfigurationException;
 import org.apache.fluss.exception.UnreadableClusterFeatureLevelsException;
 import org.apache.fluss.rpc.protocol.feature.ClusterFeatureLevels;
 import org.apache.fluss.server.zk.ZooKeeperClient.VersionedData;
@@ -35,7 +36,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.apache.fluss.rpc.protocol.feature.ClusterFeature.LOG_RECORD_BATCH_VERSION;
-import static org.apache.fluss.server.zk.data.ZkData.ClusterFeaturesZNode.APPLIED_LEVELS_FILE_NAME;
+import static org.apache.fluss.server.feature.AppliedClusterFeatureLevelsFile.FILE_NAME;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -81,6 +82,27 @@ class ClusterFeatureLevelsRecoveryTest {
     }
 
     @Test
+    void testServerRefusesToStartAtALevelItDoesNotSupport() {
+        // a newer version of the cluster finalized a level this server does not know
+        assertThatThrownBy(
+                        () ->
+                                ClusterFeatures.levelsToStartWith(
+                                        () ->
+                                                Optional.of(
+                                                        new VersionedData<>(
+                                                                Collections.singletonMap(
+                                                                        LOG_RECORD_BATCH_VERSION
+                                                                                .featureName(),
+                                                                        4),
+                                                                5)),
+                                        Optional.of(RAISED)))
+                .isInstanceOf(IllegalConfigurationException.class)
+                .hasMessageContaining(
+                        "does not support the finalized cluster features "
+                                + "[log.record-batch.version (supports [2, 3], finalized 4)]");
+    }
+
+    @Test
     void testServerStartsWithItsOwnLevelsWhileTheNodeIsCorrupt() throws Exception {
         VersionedData<ClusterFeatureLevels> start =
                 ClusterFeatures.levelsToStartWith(
@@ -112,7 +134,7 @@ class ClusterFeatureLevelsRecoveryTest {
                                             content.getBytes(StandardCharsets.UTF_8)))
                     .isInstanceOf(UnreadableClusterFeatureLevelsException.class)
                     .hasMessageContaining("can't be read")
-                    .hasMessageContaining(APPLIED_LEVELS_FILE_NAME);
+                    .hasMessageContaining(FILE_NAME);
         }
     }
 
@@ -129,9 +151,9 @@ class ClusterFeatureLevelsRecoveryTest {
         AppliedClusterFeatureLevelsFile.write(Collections.singletonList(dir2), BASELINE);
         assertThat(AppliedClusterFeatureLevelsFile.read(Arrays.asList(dir1, dir2)))
                 .contains(RAISED);
-        assertThat(new File(dir1, APPLIED_LEVELS_FILE_NAME + ".tmp")).doesNotExist();
+        assertThat(new File(dir1, FILE_NAME + ".tmp")).doesNotExist();
 
-        Files.write(new File(dir2, APPLIED_LEVELS_FILE_NAME).toPath(), new byte[] {'{'});
+        Files.write(new File(dir2, FILE_NAME).toPath(), new byte[] {'{'});
         assertThatThrownBy(() -> AppliedClusterFeatureLevelsFile.read(Arrays.asList(dir1, dir2)))
                 .hasMessageContaining("can't be read");
     }

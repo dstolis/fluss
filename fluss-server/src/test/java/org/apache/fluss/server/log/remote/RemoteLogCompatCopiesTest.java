@@ -95,7 +95,7 @@ class RemoteLogCompatCopiesTest extends RemoteLogTestBase {
         assertThat(fetchInfo.remoteLogSegmentList()).hasSize(1);
         RemoteLogSegment copySegment = fetchInfo.remoteLogSegmentList().get(0);
         assertThat(copySegment.remoteLogSegmentId())
-                .isEqualTo(RemoteLogCompatCopies.copyId(segment.remoteLogSegmentId()));
+                .isEqualTo(FlussPaths.remoteLogSegmentCopyId(segment.remoteLogSegmentId()));
         assertThat(copySegment.remoteLogStartOffset()).isEqualTo(segment.remoteLogStartOffset());
         assertThat(copySegment.remoteLogEndOffset()).isEqualTo(segment.remoteLogEndOffset());
         assertThat(copySegment.maxBatchMagic()).isEqualTo(LOG_MAGIC_VALUE_V2);

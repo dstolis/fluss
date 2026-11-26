@@ -1855,7 +1855,6 @@ public class ReplicaManager implements ServerReconfigurable {
         if (isFromFollower && readerIsBelowLevel) {
             return refuseFollowerBelowLevel(fetchParams, bucketFetchInfo);
         }
-        boolean convertsBatches = readerIsBelowLevel;
         int limitBytes = fetchParams.maxFetchBytes();
         for (Map.Entry<TableBucket, FetchReqInfo> entry : bucketFetchInfo.entrySet()) {
             TableBucket tb = entry.getKey();
@@ -1895,7 +1894,7 @@ public class ReplicaManager implements ServerReconfigurable {
                 if (fetchParams.isRemoteFirstClientFetch()) {
                     FetchLogResultForBucket remoteFirstFetchResult =
                             tryFetchRemoteFirst(replica, fetchOffset);
-                    if (remoteFirstFetchResult != null && convertsBatches) {
+                    if (remoteFirstFetchResult != null && readerIsBelowLevel) {
                         remoteFirstFetchResult =
                                 oldReaderRemoteFetcher.fetch(
                                         replica,
@@ -1924,7 +1923,7 @@ public class ReplicaManager implements ServerReconfigurable {
                 }
                 limitBytes = Math.max(0, limitBytes - recordBatchSize);
                 LogRecords records = fetchedData.getRecords();
-                if (convertsBatches) {
+                if (readerIsBelowLevel) {
                     records =
                             LogRecordBatchConverter.convert(
                                     records, fetchParams.readerMaxBatchMagic());
@@ -1965,7 +1964,7 @@ public class ReplicaManager implements ServerReconfigurable {
                 FetchLogResultForBucket result;
                 if (replica != null && e instanceof LogOffsetOutOfRangeException) {
                     result = handleFetchOutOfRangeException(replica, fetchOffset, e);
-                    if (convertsBatches) {
+                    if (readerIsBelowLevel) {
                         result =
                                 oldReaderRemoteFetcher.fetch(
                                         replica, result, adjustedMaxBytes, fetchParams);

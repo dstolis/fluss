@@ -80,9 +80,11 @@ class FinalizedClusterFeaturesTest {
     }
 
     @Test
-    void testRejectionReadsTheStoredLevelsFirst() throws Exception {
+    void testRejectionReadsTheStoredLevels() throws Exception {
         ManualClock clock = new ManualClock(1000L);
         FinalizedClusterFeatures features = new FinalizedClusterFeatures(clock);
+        ManuallyTriggeredScheduledExecutorService executor =
+                new ManuallyTriggeredScheduledExecutorService();
         Map<String, Integer> stored = new HashMap<>();
         AtomicInteger reads = new AtomicInteger();
         features.setStoredLevelsReader(
@@ -90,47 +92,51 @@ class FinalizedClusterFeaturesTest {
                     reads.incrementAndGet();
                     return Optional.of(new VersionedData<>(new HashMap<>(stored), reads.get()));
                 },
-                Runnable::run);
+                executor);
 
-        // the stored level is the baseline, so the V3 batch is rejected after one read
+        // the stored level is the baseline, so the V3 batch is rejected, and stays rejected after
+        // the read
         assertThat(features.checkWrite(v3Records())).isNotNull();
+        executor.triggerAll();
         assertThat(reads).hasValue(1);
+        assertThat(features.checkWrite(v3Records())).isNotNull();
 
         // the cluster raises the level, but the watch has not applied it yet
         stored.put(LOG_RECORD_BATCH_VERSION.featureName(), 3);
         // within the refresh interval the stored levels are not read again
-        assertThat(features.checkWrite(v3Records())).isNotNull();
-        assertThat(reads).hasValue(1);
+        assertThat(executor.numQueuedRunnables()).isZero();
 
+        // the next rejection reads them, so the writer's retry is accepted
         clock.advanceTime(FinalizedClusterFeatures.REFRESH_INTERVAL_MS, TimeUnit.MILLISECONDS);
-        assertThat(features.checkWrite(v3Records())).isNull();
+        assertThat(features.checkWrite(v3Records())).isNotNull();
+        executor.triggerAll();
         assertThat(reads).hasValue(2);
         assertThat(features.levels().level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
+        assertThat(features.checkWrite(v3Records())).isNull();
 
         // accepted writes never read the stored levels
         clock.advanceTime(FinalizedClusterFeatures.REFRESH_INTERVAL_MS, TimeUnit.MILLISECONDS);
         assertThat(features.checkWrite(v3Records())).isNull();
+        assertThat(executor.numQueuedRunnables()).isZero();
         assertThat(reads).hasValue(2);
     }
 
     @Test
-    void testIsFinalizedAtLeastReadsTheStoredLevels() {
-        ManualClock clock = new ManualClock(1000L);
-        FinalizedClusterFeatures features = new FinalizedClusterFeatures(clock);
-        assertThat(features.isFinalizedAtLeast(LOG_RECORD_BATCH_VERSION, LOG_MAGIC_VALUE_V3))
-                .isFalse();
-
+    void testRefreshIfBelowLatestReadsTheStoredLevels() {
+        FinalizedClusterFeatures features = new FinalizedClusterFeatures(new ManualClock(1000L));
+        ManuallyTriggeredScheduledExecutorService executor =
+                new ManuallyTriggeredScheduledExecutorService();
         features.setStoredLevelsReader(
-                () ->
-                        Optional.of(
-                                new VersionedData<>(
-                                        Collections.singletonMap(
-                                                LOG_RECORD_BATCH_VERSION.featureName(), 3),
-                                        1)),
-                Runnable::run);
-        assertThat(features.isFinalizedAtLeast(LOG_RECORD_BATCH_VERSION, LOG_MAGIC_VALUE_V3))
-                .isTrue();
-        assertThat(features.levels().level(LOG_RECORD_BATCH_VERSION)).isEqualTo(3);
+                () -> Optional.of(new VersionedData<>(ClusterFeatureLevels.latest().toMap(), 1)),
+                executor);
+
+        features.refreshIfBelowLatest();
+        executor.triggerAll();
+        assertThat(features.levels()).isEqualTo(ClusterFeatureLevels.latest());
+
+        // at the latest levels there is nothing to read
+        features.refreshIfBelowLatest();
+        assertThat(executor.numQueuedRunnables()).isZero();
     }
 
     @Test
@@ -193,15 +199,17 @@ class FinalizedClusterFeaturesTest {
     }
 
     @Test
-    void testReadBeforeRejectionAppliesTheStoredEpoch() throws Exception {
+    void testReadAfterRejectionAppliesTheStoredEpoch() throws Exception {
         FinalizedClusterFeatures features = new FinalizedClusterFeatures(new ManualClock(1000L));
         features.apply(ClusterFeatureLevels.baseline(), 0);
         features.setStoredLevelsReader(
                 () -> Optional.of(new VersionedData<>(ClusterFeatureLevels.latest().toMap(), 1)),
                 Runnable::run);
 
-        assertThat(features.checkWrite(v3Records())).isNull();
+        // the read ran on the calling thread, but the rejected batches were checked before it
+        assertThat(features.checkWrite(v3Records())).isNotNull();
         assertThat(features.epoch()).isEqualTo(1);
+        assertThat(features.checkWrite(v3Records())).isNull();
     }
 
     @Test
